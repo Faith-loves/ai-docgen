@@ -1,0 +1,59 @@
+{
+  "name": "ai-docgen",
+  "displayName": "AI DocGen",
+  "description": "Generate beginner-friendly code comments and documentation using a backend API.",
+  "version": "0.0.1",
+  "publisher": "Faith",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:ai-docgen.generateForCurrentFile",
+    "onCommand:ai-docgen.documentFolderZip"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ai-docgen.generateForCurrentFile",
+        "title": "AI DocGen: Generate Documentation for Current File"
+      },
+      {
+        "command": "ai-docgen.documentFolderZip",
+        "title": "AI DocGen: Document Folder (Download ZIP)"
+      }
+    ],
+    "configuration": {
+      "title": "AI DocGen",
+      "properties": {
+        "aiDocGen.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Base URL of the AI DocGen backend. Example: http://127.0.0.1:8000 or https://your-backend.com"
+        },
+        "aiDocGen.useAi": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, backend will try to use AI summarization (if available)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p ."
+  },
+  "devDependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "archiver": "^6.0.2"
+  }
+}
