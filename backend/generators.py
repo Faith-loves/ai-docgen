@@ -19,6 +19,7 @@ AUTO_MARKERS = [
     "Professional beginner-friendly comments",
     "Professional beginner-friendly notes",
     "Professional beginner-friendly JS notes",
+    "Professional beginner-friendly Java notes",
     "Professional beginner-friendly CSS notes",
 ]
 
@@ -42,7 +43,7 @@ def _clean_existing_auto_headers(code: str) -> str:
             continue
 
         if skipping:
-            # Stop skipping after a blank line
+            # stop skipping after a blank line
             if line.strip() == "":
                 skipping = False
             continue
@@ -54,7 +55,7 @@ def _clean_existing_auto_headers(code: str) -> str:
 
 
 # -----------------------------
-# Python analysis (safe)
+# Python analysis (accurate)
 # -----------------------------
 
 def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
@@ -65,17 +66,14 @@ def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
 
 
 def _summarize_python_code(code: str) -> Dict[str, Any]:
-    """
-    AST summary. Must never crash.
-    """
     tree, err = _safe_parse_python(code)
 
     summary: Dict[str, Any] = {
         "parse_ok": tree is not None,
         "parse_error": err,
         "imports": [],
-        "functions": [],   # list[str]
-        "classes": [],     # list[str]
+        "functions": [],
+        "classes": [],
         "loops": 0,
         "has_input": "input(" in code.lower(),
     }
@@ -133,10 +131,10 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
 
 
 # -----------------------------
-# Python commenting (accurate per code)
+# Python comment inference (NO guessing, only observable intent)
 # -----------------------------
 
-def _op_to_words(op: ast.operator) -> Optional[str]:
+def _op_name(op: ast.operator) -> Optional[str]:
     if isinstance(op, ast.Add):
         return "adds"
     if isinstance(op, ast.Sub):
@@ -145,305 +143,352 @@ def _op_to_words(op: ast.operator) -> Optional[str]:
         return "multiplies"
     if isinstance(op, ast.Div):
         return "divides"
+    if isinstance(op, ast.FloorDiv):
+        return "floor-divides"
     if isinstance(op, ast.Mod):
         return "takes the remainder of"
     if isinstance(op, ast.Pow):
-        return "raises"
+        return "raises to the power of"
     return None
 
 
-def _expr_to_name(expr: ast.AST) -> str:
+def _is_name(node: ast.AST, name: str) -> bool:
+    return isinstance(node, ast.Name) and node.id == name
+
+
+def _call_name(node: ast.Call) -> str:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return "a function"
+
+
+def _describe_return_expr(expr: ast.AST) -> str:
     """
-    Very small, safe stringifier for common expressions (no code-guessing).
+    Describe what a RETURN does in a beginner-friendly way,
+    based only on the returned expression.
     """
-    if isinstance(expr, ast.Name):
-        return expr.id
+    # return a + b
+    if isinstance(expr, ast.BinOp):
+        op = _op_name(expr.op)
+        if op:
+            # Very common: a+b, price*quantity, etc.
+            return f"Returns a value that {op} two values."
+
+        # fallback
+        return "Returns the result of a calculation."
+
+    # return f"...{x}..."
+    if isinstance(expr, ast.JoinedStr):
+        return "Returns a formatted text string (an f-string)."
+
+    # return "text"
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return "Returns a text string."
+
+    # return 123 / 12.3 / True / None
     if isinstance(expr, ast.Constant):
-        return repr(expr.value)
-    if isinstance(expr, ast.Attribute):
-        base = _expr_to_name(expr.value)
-        return f"{base}.{expr.attr}"
+        return "Returns a constant value."
+
+    # return some_variable
+    if isinstance(expr, ast.Name):
+        return "Returns a previously computed value."
+
+    # return [ ... ] or ( ... )
+    if isinstance(expr, ast.List):
+        return "Returns a list."
+    if isinstance(expr, ast.Tuple):
+        return "Returns multiple values as a tuple."
+
+    # return { ... }
+    if isinstance(expr, ast.Dict):
+        return "Returns a dictionary (key/value mapping)."
+
+    # return [x for x in items if ...]
+    if isinstance(expr, ast.ListComp):
+        if expr.generators and any(g.ifs for g in expr.generators):
+            return "Returns a filtered list (keeps only items that match a condition)."
+        return "Returns a new list built from another sequence."
+
+    # return {k: v for ...}
+    if isinstance(expr, ast.DictComp):
+        return "Returns a dictionary built from another sequence."
+
+    # return max(...), json.dumps(...), str(...), etc.
     if isinstance(expr, ast.Call):
-        fn = _expr_to_name(expr.func)
-        return f"{fn}(...)"
-    if isinstance(expr, ast.Subscript):
-        return f"{_expr_to_name(expr.value)}[...]"
-    return "a value"
+        fn = _call_name(expr)
+        if fn == "max":
+            return "Returns the largest item based on a rule."
+        if fn == "min":
+            return "Returns the smallest item based on a rule."
+        if fn == "sorted":
+            return "Returns a sorted version of the data."
+        if fn in ("str", "int", "float"):
+            return f"Returns the value converted to {fn}."
+        if fn == "join":
+            return "Returns one string made by joining many strings together."
+        if fn == "dumps":
+            return "Returns JSON text."
+        if fn == "loads":
+            return "Returns data parsed from JSON text."
+        return "Returns the result of calling a function."
+
+    # return something.attr
+    if isinstance(expr, ast.Attribute):
+        return "Returns a value stored on an object."
+
+    return "Returns a result value."
 
 
-def _infer_function_summary(fn: ast.FunctionDef) -> List[str]:
+def _describe_side_effects(body: List[ast.stmt]) -> List[str]:
     """
-    Build 1–3 comment lines that match the function code.
-    We do not invent behavior. We describe what we can see.
+    Look for clear side effects (append/pop/write/print/input) without guessing.
     """
-    lines: List[str] = []
-    fn_name = fn.name
+    effects: List[str] = []
 
-    # Special-case "main"
-    if fn_name.lower() == "main":
-        lines.append("Main program entry point (controls the main flow).")
+    class Finder(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> Any:
+            # print(...)
+            if isinstance(node.func, ast.Name) and node.func.id == "print":
+                if "Prints information to the screen." not in effects:
+                    effects.append("Prints information to the screen.")
+            # input(...)
+            if isinstance(node.func, ast.Name) and node.func.id == "input":
+                if "Reads input from the user." not in effects:
+                    effects.append("Reads input from the user.")
+            # obj.append(...)
+            if isinstance(node.func, ast.Attribute):
+                if node.func.attr == "append":
+                    if "Adds an item to a list." not in effects:
+                        effects.append("Adds an item to a list.")
+                if node.func.attr == "pop":
+                    if "Removes an item from a list." not in effects:
+                        effects.append("Removes an item from a list.")
+                if node.func.attr in ("write_text", "write", "writelines"):
+                    if "Writes output to a file." not in effects:
+                        effects.append("Writes output to a file.")
+                if node.func.attr in ("read_text", "read", "readlines"):
+                    if "Reads data from a file." not in effects:
+                        effects.append("Reads data from a file.")
+            self.generic_visit(node)
 
-    # Detect returns
-    returns: List[ast.Return] = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+        def visit_Try(self, node: ast.Try) -> Any:
+            if "Handles errors using try/except." not in effects:
+                effects.append("Handles errors using try/except.")
+            self.generic_visit(node)
 
-    # Detect input/print usage
-    calls: List[ast.Call] = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
-    called_names = []
-    for c in calls:
-        called_names.append(_expr_to_name(c.func))
+        def visit_For(self, node: ast.For) -> Any:
+            if "Uses a loop to repeat steps." not in effects:
+                effects.append("Uses a loop to repeat steps.")
+            self.generic_visit(node)
 
-    uses_input = any(name.startswith("input") for name in called_names)
-    uses_print = any(name.startswith("print") for name in called_names)
+        def visit_While(self, node: ast.While) -> Any:
+            if "Uses a loop to repeat steps." not in effects:
+                effects.append("Uses a loop to repeat steps.")
+            self.generic_visit(node)
 
-    # Detect list operations like append/pop/extend
-    append_calls = []
-    pop_calls = []
-    for c in calls:
-        if isinstance(c.func, ast.Attribute) and c.func.attr == "append":
-            append_calls.append(c)
-        if isinstance(c.func, ast.Attribute) and c.func.attr == "pop":
-            pop_calls.append(c)
+    for st in body:
+        Finder().visit(st)
 
-    # Detect simple arithmetic return: a + b, a - b, etc.
-    if returns:
-        # Try first return that has a value
-        for r in returns:
-            if r.value is None:
-                continue
+    return effects
 
-            v = r.value
 
-            # return a + b / a - b etc.
-            if isinstance(v, ast.BinOp):
-                op_words = _op_to_words(v.op)
-                left = _expr_to_name(v.left)
-                right = _expr_to_name(v.right)
-                if op_words:
-                    # "adds a and b"
-                    if op_words == "adds":
-                        lines.append(f"Adds {left} and {right}.")
-                        lines.append(f"Returns the result of {left} + {right}.")
-                    elif op_words == "subtracts":
-                        lines.append(f"Subtracts {right} from {left}.")
-                        lines.append(f"Returns the result of {left} - {right}.")
-                    elif op_words == "multiplies":
-                        lines.append(f"Multiplies {left} by {right}.")
-                        lines.append(f"Returns the result of {left} * {right}.")
-                    elif op_words == "divides":
-                        lines.append(f"Divides {left} by {right}.")
-                        lines.append(f"Returns the result of {left} / {right}.")
-                    elif op_words == "takes the remainder of":
-                        lines.append(f"Computes the remainder of {left} divided by {right}.")
-                        lines.append(f"Returns the result of {left} % {right}.")
-                    elif op_words == "raises":
-                        lines.append(f"Raises {left} to the power of {right}.")
-                        lines.append(f"Returns the result of {left} ** {right}.")
+def _infer_function_comment(node: ast.FunctionDef, in_class: Optional[str]) -> str:
+    """
+    Build a single, accurate summary line for a function/method.
+    - Uses return description if returns exist
+    - Adds side-effects if found
+    - Tries to use the function name ONLY as mild context (not guessing behavior)
+    """
+    # Special-case: __init__
+    if node.name == "__init__" and in_class:
+        return f"Initializes a new `{in_class}` object (sets up starting values)."
+
+    # Find returns
+    returns: List[ast.Return] = [n for n in ast.walk(node) if isinstance(n, ast.Return)]
+    return_descs: List[str] = []
+    for r in returns:
+        if r.value is None:
+            # `return` without value: exits early
+            return_descs.append("May exit early to stop the function.")
+        else:
+            return_descs.append(_describe_return_expr(r.value))
+
+    # Side effects
+    effects = _describe_side_effects(node.body)
+
+    # If we have a strong return description, use the best one
+    summary = ""
+    if return_descs:
+        # choose the most informative (prefer ones mentioning lists/dicts/formatting)
+        priority = [
+            "filtered list",
+            "dictionary",
+            "formatted",
+            "JSON",
+            "calculation",
+            "converted",
+            "largest",
+            "smallest",
+        ]
+        chosen = return_descs[0]
+        for p in priority:
+            for d in return_descs:
+                if p.lower() in d.lower():
+                    chosen = d
                     break
+        summary = chosen
+    elif effects:
+        # no return -> describe side-effect-based function
+        summary = effects[0]
+    else:
+        summary = "Performs one step of the program."
 
-            # return something(...) / return variable / return string
-            if isinstance(v, ast.Call):
-                lines.append(f"Returns the result of calling {_expr_to_name(v.func)}.")
-                break
-
-            if isinstance(v, ast.Name):
-                lines.append(f"Returns {v.id}.")
-                break
-
-            if isinstance(v, ast.Constant):
-                lines.append("Returns a constant value.")
-                break
-
-            # Fallback for other return expressions
-            lines.append("Returns a value based on the function logic.")
-            break
-
-    # If no meaningful return message and we saw list modifications
-    if append_calls and not any("Adds" in s or "append" in s.lower() for s in lines):
-        # Mention first append target if available
-        c0 = append_calls[0]
-        if isinstance(c0.func, ast.Attribute):
-            target = _expr_to_name(c0.func.value)
-            lines.append(f"Appends an item to {target}.")
-
-    if pop_calls and not any("Removes" in s or "pop" in s.lower() for s in lines):
-        c0 = pop_calls[0]
-        if isinstance(c0.func, ast.Attribute):
-            target = _expr_to_name(c0.func.value)
-            lines.append(f"Removes an item from {target}.")
-
-    # Mention terminal interaction if we saw it
-    if uses_input and not any("input" in s.lower() or "user" in s.lower() for s in lines):
-        lines.append("Reads input from the user in the terminal.")
-    if uses_print and not any("print" in s.lower() or "displays" in s.lower() for s in lines):
-        lines.append("Prints output to the terminal.")
-
-    # Trim duplicates / keep it short
-    dedup: List[str] = []
-    for s in lines:
-        s2 = s.strip()
-        if s2 and s2 not in dedup:
-            dedup.append(s2)
-
-    # If still empty, give a neutral statement
-    if not dedup:
-        dedup = ["Performs one specific job in the program."]
-
-    # Keep at most 3 lines (clean, not spam)
-    return dedup[:3]
+    # Make summary read like “This function …”
+    # (No “returns the result of calling x” wording.)
+    if summary.startswith("Returns"):
+        return summary.replace("Returns", "Returns", 1)
+    return summary
 
 
-def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
+def _add_python_comments(code: str) -> str:
     """
-    Professional Python commenting rules:
-    - No "what this program does" block (as requested)
-    - Clean header
-    - Imports commented once
-    - Each function gets an accurate summary based on its code
-    - Loops and try/except get short comments
-    - No spam / no repetition
+    Python commenting rules (professional + accurate):
+    - One header at top
+    - Explain clear blocks (imports / loops / try/except) lightly
+    - For each function/method: add a summary that matches observable behavior
+    - NEVER insert comments between decorators and def
+    - Avoid “What this program does” block (user requested)
     """
     code = _clean_existing_auto_headers(code)
-    tree, err = _safe_parse_python(code)
+    tree, _err = _safe_parse_python(code)
 
+    lines = code.splitlines()
     out: List[str] = []
+
     out.append("# =======================================")
     out.append("# Professional beginner-friendly comments")
     out.append("# =======================================")
-    out.append(f"# File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
     out.append("")
 
-    if tree is None:
-        # If parsing fails, we still return a clean header + original code.
-        out.append("# NOTE: This file has a syntax/indentation issue, so accurate auto-commenting is limited.")
-        out.append("# Fix indentation (usually 4 spaces), then try again for better comments.")
+    # If AST parse fails, we must be conservative (no structure-based insertion)
+    if not tree:
+        out.append("# Note: This file could not be fully parsed (possible indentation/syntax issue).")
+        out.append("# Comments below are minimal to avoid breaking the code.")
         out.append("")
-        out.append(code.strip())
+        # Minimal pass: only comment imports and top-level loops/try blocks by regex
+        for line in lines:
+            s = line.strip()
+            if s.startswith("import ") or s.startswith("from "):
+                out.append("# Imports: libraries used by this file.")
+                out.append(line)
+                continue
+            if re.match(r"^\s*(for|while)\b", line):
+                indent = re.match(r"^\s*", line).group(0)
+                out.append(f"{indent}# Loop: repeats the block below.")
+                out.append(line)
+                continue
+            if re.match(r"^\s*try\s*:", line):
+                indent = re.match(r"^\s*", line).group(0)
+                out.append(f"{indent}# Error handling: try this block and catch errors instead of crashing.")
+                out.append(line)
+                continue
+            out.append(line)
         return "\n".join(out).rstrip() + "\n"
 
-    # Collect function summaries
-    fn_map: Dict[int, List[str]] = {}  # lineno -> [summary lines]
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            fn_map[node.lineno] = _infer_function_summary(node)
+    # Build a map: line number -> comment lines to insert BEFORE that line
+    insert_before: Dict[int, List[str]] = {}
 
-    lines = code.splitlines()
+    # Helper to schedule insertion
+    def add_before(lineno_1based: int, comment_lines: List[str]) -> None:
+        idx = max(0, lineno_1based - 1)
+        insert_before.setdefault(idx, [])
+        # avoid duplicates
+        for c in comment_lines:
+            if c not in insert_before[idx]:
+                insert_before[idx].append(c)
 
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
+    # Walk AST: comment functions and classes
+    class Stack(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: List[str] = []
 
-        # Imports
-        if stripped.startswith("import ") or stripped.startswith("from "):
-            # Add imports comment once
-            if not any(x.strip() == "# Imports: libraries used by this file." for x in out):
-                out.append("# Imports: libraries used by this file.")
-            out.append(line)
-            i += 1
-            continue
+        def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+            # comment class
+            add_before(
+                node.lineno,
+                [
+                    "",
+                    "# ---------------------------------------",
+                    f"# Class: {node.name}",
+                    "# A class groups related data (attributes) and behavior (methods).",
+                    "# ---------------------------------------",
+                ],
+            )
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
 
-        # Function def (insert accurate summary block)
-        m = re.match(r"^(\s*)def\s+([a-zA-Z_]\w*)\s*\(", line)
-        if m:
-            indent = m.group(1)
-            lineno = i + 1
-            summary_lines = fn_map.get(lineno, ["Performs one specific job in the program."])
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+            in_class = self.class_stack[-1] if self.class_stack else None
 
-            out.append("")
-            out.append(f"{indent}# ---------------------------------------")
-            out.append(f"{indent}# Function: {m.group(2)}()")
-            for s in summary_lines:
-                out.append(f"{indent}# - {s}")
-            out.append(f"{indent}# ---------------------------------------")
-            out.append(line)
-            i += 1
-            continue
+            # IMPORTANT: decorators must stay directly above def.
+            # So we insert comments BEFORE the FIRST decorator if present,
+            # otherwise before the def line.
+            target_line = node.lineno
+            if node.decorator_list:
+                # decorator lineno is available in Python 3.8+ nodes
+                dlines = [getattr(d, "lineno", node.lineno) for d in node.decorator_list]
+                target_line = min(dlines)
 
-        # Loops
+            # Build accurate summary line
+            summary = _infer_function_comment(node, in_class)
+
+            header = [
+                "",
+                "# ---------------------------------------",
+                f"# Function: {node.name}()",
+                f"# {summary}",
+                "# ---------------------------------------",
+            ]
+
+            add_before(target_line, header)
+            self.generic_visit(node)
+
+    Stack().visit(tree)
+
+    # Also: comment imports once (top-of-file scan)
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("import ") or s.startswith("from "):
+            add_before(idx + 1, ["# Imports: libraries used by this file."])
+            break
+
+    # Render with insertions
+    for idx, line in enumerate(lines):
+        if idx in insert_before:
+            out.extend(insert_before[idx])
+        # Add loop / try comments lightly (but don’t spam every loop inside list comps)
         if re.match(r"^\s*(for|while)\b", line):
             indent = re.match(r"^\s*", line).group(0)
-            out.append(f"{indent}# Loop: repeats the block below.")
-            out.append(line)
-            i += 1
-            continue
-
-        # try/except
+            # avoid duplicates if already inserted a function header right above
+            if not (out and out[-1].strip().startswith("# Loop:")):
+                out.append(f"{indent}# Loop: repeats the block below.")
         if re.match(r"^\s*try\s*:", line):
             indent = re.match(r"^\s*", line).group(0)
-            out.append(f"{indent}# Error handling: catch errors instead of crashing.")
-            out.append(line)
-            i += 1
-            continue
-
-        if stripped.startswith("except "):
-            indent = re.match(r"^\s*", line).group(0)
-            out.append(f"{indent}# If an error happens above, this block runs.")
-            out.append(line)
-            i += 1
-            continue
-
-        # main guard
-        if stripped == 'if __name__ == "__main__":':
-            out.append("")
-            out.append("# Run the program only when this file is executed directly.")
-            out.append(line)
-            i += 1
-            continue
-
+            if not (out and out[-1].strip().startswith("# Error handling:")):
+                out.append(f"{indent}# Error handling: try this block and catch errors instead of crashing.")
         out.append(line)
-        i += 1
 
     return "\n".join(out).rstrip() + "\n"
-
-
-# -----------------------------
-# Docs generation (Python)
-# -----------------------------
-
-def _python_how_to_run(code: str, file_path: str) -> str:
-    filename = os.path.basename(file_path) if file_path else "main.py"
-    c = code.lower()
-
-    steps: List[str] = []
-    steps.append("### Option A: Run with Python (recommended)")
-    steps.append("1. Make sure Python is installed (Python 3).")
-    steps.append("2. Open a terminal in the folder containing the file.")
-    steps.append(f"3. Run: `python {filename}`")
-
-    if "tkinter" in c:
-        steps.append("4. A window should open. Use the window controls.")
-    elif "turtle" in c:
-        steps.append("4. A drawing window should open. Wait for it to finish drawing.")
-        steps.append("5. Close the window to end the program.")
-    elif "input(" in c:
-        steps.append("4. Follow the prompts in the terminal and type your input.")
-    else:
-        steps.append("4. If nothing happens, the file may only define functions used by other files.")
-
-    return "\n".join(steps)
-
-
-def _guess_python_purpose(code: str) -> str:
-    """
-    Purpose for documentation (not comments).
-    """
-    c = code.lower()
-    if "from tkinter" in c or "import tkinter" in c:
-        return "Creates a desktop window (GUI) using Tkinter."
-    if "from turtle" in c or "import turtle" in c:
-        return "Draws graphics on the screen using the Turtle library."
-    if "input(" in c:
-        return "Runs in the terminal and interacts with the user through input prompts."
-    if "random" in c and ("randint" in c or "choice" in c):
-        return "Uses random numbers to create a small simulation or game."
-    return "Contains Python logic that runs when the file is executed."
 
 
 def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
     """
     Produces:
-    - commented_code (professional + accurate per code)
-    - documentation (beginner-friendly)
+    - commented_code
+    - documentation (beginner-friendly, specific)
     """
     code_clean = code.replace("\r\n", "\n")
     info = _summarize_python_code(code_clean)
@@ -453,18 +498,13 @@ def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str,
     if not info.get("parse_ok", True):
         parse_note = (
             "## Important Note\n"
-            "This Python file has a syntax/indentation issue, so full analysis may be limited.\n"
+            "This Python file has a syntax/indentation issue, so some deep analysis is limited.\n"
             "Fix indentation (usually 4 spaces) and try again.\n\n"
         )
-
-    purpose = _guess_python_purpose(code_clean)
-    how_to = _python_how_to_run(code_clean, file_path)
 
     documentation = (
         f"# File Documentation - `{os.path.basename(file_path)}`\n\n"
         f"{parse_note}"
-        f"## Purpose\n"
-        f"- {purpose}\n\n"
         f"## Key Components\n"
         f"- Lines of code (non-empty): **{loc}**\n"
         f"- Imports detected: **{len(info.get('imports', []))}**\n"
@@ -472,18 +512,20 @@ def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str,
         f"- Functions detected: **{len(info.get('functions', []))}**\n"
         f"- Classes detected: **{len(info.get('classes', []))}**\n\n"
         f"## Inputs / Outputs\n"
-        f"- **Inputs:** {'User types input in terminal (`input(...)`).' if info.get('has_input') else 'Function parameters or user actions.'}\n"
-        f"- **Outputs:** printed text, returned values, or UI changes.\n\n"
+        f"- **Inputs:** {'Uses terminal input (`input(...)`).' if info.get('has_input') else 'Function parameters or events.'}\n"
+        f"- **Outputs:** printed text, returned values, saved files, or UI changes (depends on the code).\n\n"
         f"## How to run (step-by-step)\n"
-        f"{how_to}\n"
+        f"1. Open a terminal in the file folder.\n"
+        f"2. Run: `python {os.path.basename(file_path)}`\n"
+        f"3. Follow any prompts or UI windows.\n"
     )
 
-    commented_code = _add_python_comments(code_clean, file_path=file_path)
+    commented_code = _add_python_comments(code_clean)
     return {"commented_code": commented_code, "documentation": documentation}
 
 
 # -----------------------------
-# HTML (professional comments)
+# HTML (professional + accurate)
 # -----------------------------
 
 def _comment_html(code: str) -> str:
@@ -494,7 +536,6 @@ def _comment_html(code: str) -> str:
     out.append("<!-- ======================================= -->")
     out.append("<!-- Professional beginner-friendly comments -->")
     out.append("<!-- ======================================= -->")
-    out.append("<!-- This file defines the STRUCTURE of a web page. -->")
     out.append("")
 
     seen = set()
@@ -510,7 +551,7 @@ def _comment_html(code: str) -> str:
         if s.startswith("<!doctype"):
             add_once("doctype", "<!-- DOCTYPE: tells the browser this is modern HTML5 -->")
         if s.startswith("<html"):
-            add_once("html", "<!-- <html>: the root element of the whole page -->")
+            add_once("html", "<!-- <html>: the root element of the page -->")
         if s.startswith("<head"):
             add_once("head", "<!-- <head>: page settings (title, CSS links, meta tags) -->")
         if s.startswith("<title"):
@@ -518,13 +559,15 @@ def _comment_html(code: str) -> str:
         if s.startswith("<body"):
             add_once("body", "<!-- <body>: everything the user can see on the page -->")
         if s.startswith("<header"):
-            add_once("header", "<!-- <header>: top section (logo/title/menu) -->")
+            add_once("header", "<!-- <header>: top section (usually logo/title/menu) -->")
         if s.startswith("<main"):
-            add_once("main", "<!-- <main>: main page content area -->")
+            add_once("main", "<!-- <main>: the main content area -->")
         if s.startswith("<footer"):
             add_once("footer", "<!-- <footer>: bottom section (copyright/links) -->")
         if s.startswith("<script"):
-            add_once("script", "<!-- <script>: JavaScript that adds behavior to the page -->")
+            add_once("script", "<!-- <script>: JavaScript code that adds behavior -->")
+        if "<link" in s and "href=" in s:
+            add_once("csslink", "<!-- <link>: connects this HTML to a CSS file -->")
 
         out.append(line)
 
@@ -532,7 +575,7 @@ def _comment_html(code: str) -> str:
 
 
 # -----------------------------
-# CSS (professional comments)
+# CSS (professional + accurate)
 # -----------------------------
 
 def _explain_css_selector(selector: str) -> str:
@@ -541,6 +584,7 @@ def _explain_css_selector(selector: str) -> str:
         return f"Targets elements with class `{sel[1:]}`."
     if sel.startswith("#"):
         return f"Targets the element with id `{sel[1:]}`."
+    # element selector
     return f"Targets all `<{sel}>` elements."
 
 
@@ -552,22 +596,27 @@ def _comment_css(code: str) -> str:
     out.append("/* ======================================= */")
     out.append("/* Professional beginner-friendly comments */")
     out.append("/* ======================================= */")
-    out.append("/* CSS controls the LOOK of the page (colors, layout, spacing, fonts). */")
+    out.append("/* CSS controls how the page LOOKS (layout, colors, spacing, fonts). */")
     out.append("")
 
     pattern = re.compile(r"([^{]+)\{([^}]*)\}", re.S)
+    pos = 0
     for m in pattern.finditer(text):
+        before = text[pos:m.start()].strip()
+        if before:
+            out.append(before)
+            out.append("")
+
         selector = m.group(1).strip()
         body = m.group(2).strip()
 
         out.append(f"/* {_explain_css_selector(selector)} */")
         out.append(f"{selector} {{")
-
         for line in body.splitlines():
             t = line.strip()
             if not t:
                 continue
-
+            # small, helpful inline notes (not spam)
             if t.startswith("display:"):
                 out.append(f"  {t} /* layout mode */")
             elif t.startswith("gap:"):
@@ -577,22 +626,27 @@ def _comment_css(code: str) -> str:
             elif t.startswith("color:"):
                 out.append(f"  {t} /* text color */")
             elif t.startswith("font-family"):
-                out.append(f"  {t} /* font style */")
+                out.append(f"  {t} /* font */")
             elif t.startswith("padding"):
                 out.append(f"  {t} /* inner spacing */")
             elif t.startswith("margin"):
                 out.append(f"  {t} /* outer spacing */")
             else:
                 out.append(f"  {t}")
-
         out.append("}")
+        out.append("")
+        pos = m.end()
+
+    tail = text[pos:].strip()
+    if tail:
+        out.append(tail)
         out.append("")
 
     return "\n".join(out).rstrip() + "\n"
 
 
 # -----------------------------
-# Java (professional comments)
+# Java (professional + accurate)
 # -----------------------------
 
 def _comment_java(code: str) -> str:
@@ -603,19 +657,18 @@ def _comment_java(code: str) -> str:
     out.append("// =======================================")
     out.append("// Professional beginner-friendly comments")
     out.append("// =======================================")
-    out.append("// This file defines a Java class and its methods.")
     out.append("")
 
     for line in lines:
         s = line.strip()
 
         if re.match(r"^public\s+class\s+\w+", s):
-            out.append("// Class: a container that holds methods (functions) and data.")
+            out.append("// Class: groups related methods (functions) and data.")
             out.append(line)
             continue
 
         if re.match(r"^public\s+static\s+void\s+main\s*\(", s):
-            out.append("// main(): the program starts running here.")
+            out.append("// main(): program entry point (starts running here).")
             out.append(line)
             continue
 
@@ -632,7 +685,7 @@ def _comment_java(code: str) -> str:
             continue
 
         if s.startswith("return "):
-            out.append("// Return: send the result back to whoever called this method.")
+            out.append("// Return: sends a result back to whoever called this method.")
             out.append(line)
             continue
 
@@ -642,7 +695,7 @@ def _comment_java(code: str) -> str:
 
 
 # -----------------------------
-# JavaScript (you said it is OK)
+# JavaScript (you said it's OK)
 # -----------------------------
 
 def _comment_js(code: str) -> str:
@@ -657,7 +710,7 @@ def _comment_js(code: str) -> str:
 
 
 # -----------------------------
-# Public API for non-Python
+# Public API: generate_simple_docs
 # -----------------------------
 
 def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
@@ -666,6 +719,7 @@ def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code
     loc = _count_nonempty_lines(code_clean)
     filename = os.path.basename(file_path) if file_path else "pasted_code"
 
+    # Commenting
     commented = code_clean
     if language == "html":
         commented = _comment_html(code_clean)
@@ -676,6 +730,7 @@ def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code
     elif language == "java":
         commented = _comment_java(code_clean)
 
+    # Documentation
     purpose_map = {
         "html": "Defines the structure/content of a web page.",
         "css": "Defines the styles (colors/layout/fonts) of a web page.",
