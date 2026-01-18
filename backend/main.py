@@ -11,7 +11,12 @@ import os
 import re
 
 from generators import generate_python_docs, generate_simple_docs
-from local_model import generate_comment as generate_with_local_model
+# Optional local AI model (torch). If not available on Railway, app should still run.
+try:
+    from local_model import generate_comment as generate_with_local_model
+except Exception:
+    def generate_with_local_model(code: str) -> str:
+        raise RuntimeError("Local model not available (torch missing).")
 
 # OPTIONAL: only if you still keep llm_provider.py
 try:
