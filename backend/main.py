@@ -12,15 +12,7 @@ import re
 
 from generators import generate_python_docs, generate_simple_docs
 
-# ✅ Optional local AI model (torch). If not available on Railway, app should still run.
-try:
-    from local_model import generate_comment as generate_with_local_model
-except Exception:
-    def generate_with_local_model(code: str) -> str:
-        raise RuntimeError("Local model not available (torch missing).")
-
-
-# OPTIONAL: only if you still keep llm_provider.py
+# Optional: llm_provider.py (if you still keep it)
 try:
     from llm_provider import llm_available
 except Exception:
@@ -28,9 +20,38 @@ except Exception:
         return False
 
 
+# ============================================================
+# IMPORTANT: Option A behavior (Production-safe)
+# - On Railway (or anywhere without model), AI is disabled safely.
+# - Rule-based generation always works.
+# ============================================================
+
+def _local_ai_is_available() -> bool:
+    """
+    Returns True only if the local model can be imported and used.
+    In production (Railway), this will typically be False.
+    """
+    try:
+        # Import inside the function so startup never crashes
+        from local_model import generate_comment as _gen  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _generate_with_local_model(code: str) -> str:
+    """
+    Calls the local model if available, otherwise raises RuntimeError.
+    """
+    try:
+        from local_model import generate_comment as _gen
+        return _gen(code)
+    except Exception as e:
+        raise RuntimeError(f"Local model not available: {e}")
+
+
 app = FastAPI(title="AI Code Comment & Docs API", version="1.2")
 
-# DEV CORS: allow any frontend port (5173, 5174, etc.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,7 +82,8 @@ ALL_SUPPORTED_EXTS = sorted({e for v in EXTENSIONS_BY_LANGUAGE.values() for e in
 def root():
     return {
         "status": "ok",
-        "local_model": True,
+        # This is the truth: local AI might be available only on your laptop
+        "local_model_available": _local_ai_is_available(),
         "llm_available": llm_available(),
         "supported_languages": list(EXTENSIONS_BY_LANGUAGE.keys()),
     }
@@ -88,7 +110,7 @@ def generate_rule_based(language: str, code: str, file_path: str = "") -> Dict[s
 
 def _looks_like_bad_ai_summary(text: str) -> bool:
     """
-    Reject "AI summaries" that look like raw code instead of English.
+    Reject AI summaries that look like raw code instead of English.
     """
     t = (text or "").strip()
     if not t:
@@ -104,32 +126,39 @@ def _looks_like_bad_ai_summary(text: str) -> bool:
 
 def generate_any(language: str, code: str, file_path: str, use_ai: bool) -> Dict[str, Any]:
     """
-    ALWAYS generate good beginner docs using rule-based logic,
-    then optionally add ONE short AI summary if it looks good.
+    Option A behavior:
+    - Always generate rule-based docs/comments
+    - If AI is requested but not available, DO NOT FAIL.
+      Return rule-based output + a friendly note.
     """
     base = generate_rule_based(language, code, file_path)
 
-    # Optional AI one-line summary using local model
-    if use_ai:
-        try:
-            ai_summary = generate_with_local_model(code)
+    if not use_ai:
+        return base
 
-            if _looks_like_bad_ai_summary(ai_summary):
-                base["note"] = "AI was requested, but the AI summary looked like raw code, so it was ignored."
-                return base
+    # AI requested
+    if not _local_ai_is_available():
+        base["note"] = "AI was requested, but AI is disabled on this server. Used rule-based output."
+        return base
 
-            base["documentation"] = (
-                "## AI One-line Summary (optional)\n"
-                f"- {ai_summary.strip()}\n\n"
-                + base["documentation"]
-            )
+    # AI available (likely only on your laptop)
+    try:
+        ai_summary = _generate_with_local_model(code)
+
+        if _looks_like_bad_ai_summary(ai_summary):
+            base["note"] = "AI was requested, but the AI summary looked like raw code, so it was ignored."
             return base
 
-        except Exception as e:
-            base["note"] = f"AI failed, used rule-based docs. Error: {str(e)}"
-            return base
+        base["documentation"] = (
+            "## AI One-line Summary (optional)\n"
+            f"- {ai_summary.strip()}\n\n"
+            + base["documentation"]
+        )
+        return base
 
-    return base
+    except Exception as e:
+        base["note"] = f"AI failed; used rule-based output instead. Error: {str(e)}"
+        return base
 
 
 @app.post("/generate")
@@ -142,8 +171,8 @@ def read_zip_and_generate(
     preferred_language: Optional[str],
     use_ai: bool,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    results = []
-    skipped = []
+    results: List[Dict[str, Any]] = []
+    skipped: List[str] = []
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as z:
         for info in z.infolist():
@@ -163,13 +192,15 @@ def read_zip_and_generate(
             lang = preferred_language or guess_language_from_filename(path) or "unknown"
             out = generate_any(lang, code, path, use_ai)
 
-            results.append({
-                "file": path,
-                "language": lang,
-                "commented_code": out["commented_code"],
-                "documentation": out["documentation"],
-                "note": out.get("note"),
-            })
+            results.append(
+                {
+                    "file": path,
+                    "language": lang,
+                    "commented_code": out["commented_code"],
+                    "documentation": out["documentation"],
+                    "note": out.get("note"),
+                }
+            )
 
     return results, skipped
 
@@ -200,53 +231,44 @@ def _extract_first_value(doc_text: str, header: str) -> str:
 
 def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> str:
     """
-    ✅ FINAL Project README Format (your structure)
-    - Title
-    - What it does
-    - Requirements
-    - How to run
-    - Explanation of logic
-    - Example input/output
-    - Edge cases / notes
+    Project README Format:
+    1) Title
+    2) What it does
+    3) Requirements
+    4) How to run
+    5) Explanation of logic
+    6) Example input/output
+    7) Edge cases / notes
 
-    ✅ Removed: Code with docstrings/comments (you said remove it)
+    (No "code section" per your instruction.)
     """
-
     lines: List[str] = []
 
-    # ----------------------------
     # 1) Title
-    # ----------------------------
     lines.append("# Project README (Beginner-friendly)")
     lines.append("")
     lines.append("This documentation was generated automatically from the project source code.")
     lines.append("")
 
-    # ----------------------------
     # Summary
-    # ----------------------------
     lines.append("## Summary")
     lines.append(f"- Files documented: **{len(results)}**")
     lines.append(f"- Files skipped (unsupported): **{len(skipped)}**")
     lines.append("")
 
-    # ----------------------------
-    # 2) What it does (project-wide)
-    # ----------------------------
+    # 2) What it does
     project_description = "This project contains code files that work together."
     if results:
         first_doc = results[0]["documentation"]
-        guess = _extract_first_value(first_doc, "## What it does")
+        guess = _extract_first_value(first_doc, "## 2) What it does")
         if guess:
             project_description = guess
 
-    lines.append("## What it does")
+    lines.append("## 2) What it does")
     lines.append(f"- {project_description}")
     lines.append("")
 
-    # ----------------------------
     # 3) Requirements
-    # ----------------------------
     reqs: List[str] = []
     langs = sorted({r["language"] for r in results})
 
@@ -256,20 +278,18 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
         reqs.append("Java JDK installed")
     if any(l in langs for l in ["html", "css", "javascript"]):
         reqs.append("A web browser (Chrome/Edge/Firefox)")
-        reqs.append("Optional: Live Server extension in VS Code for best experience")
+        reqs.append("Optional: Live Server extension in VS Code")
 
     if not reqs:
         reqs.append("No special requirements detected")
 
-    lines.append("## Requirements")
+    lines.append("## 3) Requirements")
     for r in reqs:
         lines.append(f"- {r}")
     lines.append("")
 
-    # ----------------------------
-    # 4) How to run (project-wide)
-    # ----------------------------
-    lines.append("## How to run")
+    # 4) How to run
+    lines.append("## 4) How to run")
     if "python" in langs:
         py_file = next((os.path.basename(r["file"]) for r in results if r["language"] == "python"), "main.py")
         lines.append("### Run as Python")
@@ -293,9 +313,7 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
         lines.append(f"2. Run: `java {java_file.replace('.java','')}`")
         lines.append("")
 
-    # ----------------------------
-    # Files list
-    # ----------------------------
+    # Files included
     lines.append("## Files included")
     for r in results:
         lines.append(f"- `{_md_escape_backticks(r['file'])}` ({r['language']})")
@@ -308,9 +326,7 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
             lines.append(f"  - `{_md_escape_backticks(s)}`")
         lines.append("")
 
-    # ----------------------------
-    # Per-file documentation
-    # ----------------------------
+    # Per-file docs
     lines.append("---")
     lines.append("")
     lines.append("# Detailed Documentation Per File")
@@ -330,7 +346,7 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
 
     lines.append("---")
     lines.append("")
-    lines.append("## Notes")
+    lines.append("## 7) Edge cases / notes")
     lines.append("- This README is generated based only on the code that was included in the uploaded ZIP.")
     lines.append("- If some required images/data/config files are missing, the project may not run fully.")
     lines.append("")
@@ -349,15 +365,12 @@ async def generate_zip_download(
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as out:
-        # Write commented files back
         for r in results:
             out.writestr(r["file"], r["commented_code"])
 
-        # Write README
         readme = build_project_readme(results, skipped)
         out.writestr("PROJECT_README.md", readme)
 
-        # Optional skipped list
         if skipped:
             out.writestr("SKIPPED_FILES.txt", "\n".join(skipped))
 
