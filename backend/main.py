@@ -11,12 +11,14 @@ import os
 import re
 
 from generators import generate_python_docs, generate_simple_docs
-# Optional local AI model (torch). If not available on Railway, app should still run.
+
+# ✅ Optional local AI model (torch). If not available on Railway, app should still run.
 try:
     from local_model import generate_comment as generate_with_local_model
 except Exception:
     def generate_with_local_model(code: str) -> str:
         raise RuntimeError("Local model not available (torch missing).")
+
 
 # OPTIONAL: only if you still keep llm_provider.py
 try:
@@ -59,7 +61,7 @@ ALL_SUPPORTED_EXTS = sorted({e for v in EXTENSIONS_BY_LANGUAGE.values() for e in
 def root():
     return {
         "status": "ok",
-        "local_model": True,
+        "local_model": True,  # local model support exists, but may be disabled on Railway
         "llm_available": llm_available(),
         "supported_languages": list(EXTENSIONS_BY_LANGUAGE.keys()),
     }
