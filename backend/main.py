@@ -61,7 +61,7 @@ ALL_SUPPORTED_EXTS = sorted({e for v in EXTENSIONS_BY_LANGUAGE.values() for e in
 def root():
     return {
         "status": "ok",
-        "local_model": True,  # local model support exists, but may be disabled on Railway
+        "local_model": True,
         "llm_available": llm_available(),
         "supported_languages": list(EXTENSIONS_BY_LANGUAGE.keys()),
     }
@@ -89,7 +89,6 @@ def generate_rule_based(language: str, code: str, file_path: str = "") -> Dict[s
 def _looks_like_bad_ai_summary(text: str) -> bool:
     """
     Reject "AI summaries" that look like raw code instead of English.
-    Example: "return text;" or "{...}"
     """
     t = (text or "").strip()
     if not t:
@@ -119,7 +118,6 @@ def generate_any(language: str, code: str, file_path: str, use_ai: bool) -> Dict
                 base["note"] = "AI was requested, but the AI summary looked like raw code, so it was ignored."
                 return base
 
-            # add small AI summary at top of docs (optional)
             base["documentation"] = (
                 "## AI One-line Summary (optional)\n"
                 f"- {ai_summary.strip()}\n\n"
@@ -180,41 +178,124 @@ def _md_escape_backticks(s: str) -> str:
     return (s or "").replace("`", "\\`")
 
 
+def _extract_first_value(doc_text: str, header: str) -> str:
+    """
+    Extract the first bullet under a section like:
+    ## What it does
+    - something...
+    """
+    lines = doc_text.splitlines()
+    found = False
+    for line in lines:
+        if line.strip().lower() == header.strip().lower():
+            found = True
+            continue
+        if found:
+            if line.strip().startswith("## "):
+                break
+            if line.strip().startswith("- "):
+                return line.strip()[2:].strip()
+    return ""
+
+
 def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> str:
     """
-    ✅ Improved project README:
-    - Project purpose (best guess)
-    - Run steps
-    - FULL documentation embedded per file
+    ✅ FINAL Project README Format (your structure)
+    - Title
+    - What it does
+    - Requirements
+    - How to run
+    - Explanation of logic
+    - Example input/output
+    - Edge cases / notes
+
+    ✅ Removed: Code with docstrings/comments (you said remove it)
     """
 
     lines: List[str] = []
 
-    lines.append("# Project Documentation (Beginner-friendly)")
+    # ----------------------------
+    # 1) Title
+    # ----------------------------
+    lines.append("# Project README (Beginner-friendly)")
     lines.append("")
-    lines.append("This ZIP contains an easy-to-read version of your project.")
-    lines.append("Each supported file has:")
-    lines.append("- clear beginner-friendly comments (not spam)")
-    lines.append("- detailed documentation in simple English")
+    lines.append("This documentation was generated automatically from the project source code.")
     lines.append("")
+
+    # ----------------------------
+    # Summary
+    # ----------------------------
     lines.append("## Summary")
     lines.append(f"- Files documented: **{len(results)}**")
-    lines.append(f"- Files skipped: **{len(skipped)}**")
+    lines.append(f"- Files skipped (unsupported): **{len(skipped)}**")
     lines.append("")
 
-    # Try to guess project purpose from first file's docs
-    project_purpose = "This project contains code files that work together."
+    # ----------------------------
+    # 2) What it does (project-wide)
+    # ----------------------------
+    project_description = "This project contains code files that work together."
     if results:
         first_doc = results[0]["documentation"]
-        for line in first_doc.splitlines():
-            if line.strip().startswith("-") and "Purpose" not in line:
-                project_purpose = line.strip("- ").strip()
-                break
+        guess = _extract_first_value(first_doc, "## What it does")
+        if guess:
+            project_description = guess
 
-    lines.append("## Project Purpose (What this project does)")
-    lines.append(f"- {project_purpose}")
+    lines.append("## What it does")
+    lines.append(f"- {project_description}")
     lines.append("")
 
+    # ----------------------------
+    # 3) Requirements
+    # ----------------------------
+    reqs: List[str] = []
+    langs = sorted({r["language"] for r in results})
+
+    if "python" in langs:
+        reqs.append("Python 3 installed")
+    if "java" in langs:
+        reqs.append("Java JDK installed")
+    if any(l in langs for l in ["html", "css", "javascript"]):
+        reqs.append("A web browser (Chrome/Edge/Firefox)")
+        reqs.append("Optional: Live Server extension in VS Code for best experience")
+
+    if not reqs:
+        reqs.append("No special requirements detected")
+
+    lines.append("## Requirements")
+    for r in reqs:
+        lines.append(f"- {r}")
+    lines.append("")
+
+    # ----------------------------
+    # 4) How to run (project-wide)
+    # ----------------------------
+    lines.append("## How to run")
+    if "python" in langs:
+        py_file = next((os.path.basename(r["file"]) for r in results if r["language"] == "python"), "main.py")
+        lines.append("### Run as Python")
+        lines.append("1. Open a terminal inside the project folder.")
+        lines.append(f"2. Run: `python {py_file}`")
+        lines.append("3. Follow any prompts shown on the terminal.")
+        lines.append("")
+    if any(l in langs for l in ["html", "css", "javascript"]):
+        html_file = next((r["file"] for r in results if r["language"] == "html"), None)
+        lines.append("### Run as Website")
+        if html_file:
+            lines.append(f"1. Open `{html_file}` in a browser.")
+        else:
+            lines.append("1. Open the main `.html` file in a browser.")
+        lines.append("2. CSS and JavaScript will load automatically if linked.")
+        lines.append("")
+    if "java" in langs:
+        java_file = next((os.path.basename(r["file"]) for r in results if r["language"] == "java"), "Main.java")
+        lines.append("### Run as Java")
+        lines.append(f"1. Compile: `javac {java_file}`")
+        lines.append(f"2. Run: `java {java_file.replace('.java','')}`")
+        lines.append("")
+
+    # ----------------------------
+    # Files list
+    # ----------------------------
     lines.append("## Files included")
     for r in results:
         lines.append(f"- `{_md_escape_backticks(r['file'])}` ({r['language']})")
@@ -222,50 +303,24 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
 
     if skipped:
         lines.append("## Skipped files")
-        lines.append("These files were skipped because they are not in supported types:")
+        lines.append("- These files were skipped because they are not supported.")
         for s in skipped:
-            lines.append(f"- `{_md_escape_backticks(s)}`")
+            lines.append(f"  - `{_md_escape_backticks(s)}`")
         lines.append("")
 
-    # Show how to run based on file types
-    lines.append("## How to run this project (Step-by-step)")
-    has_python = any(r["language"] == "python" for r in results)
-    has_web = any(r["language"] in ("html", "css", "javascript") for r in results)
-
-    if has_python:
-        py_file = None
-        for r in results:
-            if r["language"] == "python":
-                py_file = os.path.basename(r["file"])
-                break
-        py_file = py_file or "main.py"
-
-        lines.append("### Option A: Run with Python (recommended)")
-        lines.append("1. Make sure Python is installed (Python 3).")
-        lines.append("2. Open a terminal in the folder containing the file.")
-        lines.append(f"3. Run: `python {py_file}`")
-        lines.append("4. Follow the instructions shown on the screen.")
-        lines.append("")
-
-    if has_web:
-        lines.append("### Option B: Run as a website")
-        lines.append("1. Find the main `.html` file.")
-        lines.append("2. Double-click it to open in your browser.")
-        lines.append("3. CSS will style it, and JavaScript will add interactivity.")
-        lines.append("")
-
+    # ----------------------------
+    # Per-file documentation
+    # ----------------------------
     lines.append("---")
     lines.append("")
-    lines.append("# Full Documentation Per File")
-    lines.append("")
-    lines.append("Below is the full detailed documentation for every file.")
+    lines.append("# Detailed Documentation Per File")
     lines.append("")
 
     for r in results:
         lines.append("---")
         lines.append("")
-        lines.append(f"# File: `{_md_escape_backticks(r['file'])}`")
-        lines.append("")
+        lines.append(f"## {os.path.basename(r['file'])}")
+        lines.append(f"- File path: `{_md_escape_backticks(r['file'])}`")
         lines.append(f"- Language: **{r['language']}**")
         if r.get("note"):
             lines.append(f"- Note: {r['note']}")
@@ -275,10 +330,9 @@ def build_project_readme(results: List[Dict[str, Any]], skipped: List[str]) -> s
 
     lines.append("---")
     lines.append("")
-    lines.append("## Note for Beginners")
-    lines.append("- Start with the file that has the main entry point (often main.py or index.html).")
-    lines.append("- If it is a web project: open the HTML first, then CSS, then JavaScript.")
-    lines.append("- If it is Python: run the file with `python filename.py`.")
+    lines.append("## Notes")
+    lines.append("- This README is generated based only on the code that was included in the uploaded ZIP.")
+    lines.append("- If some required images/data/config files are missing, the project may not run fully.")
     lines.append("")
 
     return "\n".join(lines)
@@ -295,7 +349,7 @@ async def generate_zip_download(
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as out:
-        # Write commented files
+        # Write commented files back
         for r in results:
             out.writestr(r["file"], r["commented_code"])
 
