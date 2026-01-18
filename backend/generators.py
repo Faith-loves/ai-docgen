@@ -42,7 +42,7 @@ def _clean_existing_auto_headers(code: str) -> str:
             continue
 
         if skipping:
-            # stop skipping after a blank line
+            # Stop skipping after a blank line
             if line.strip() == "":
                 skipping = False
             continue
@@ -74,8 +74,8 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
         "parse_ok": tree is not None,
         "parse_error": err,
         "imports": [],
-        "functions": [],
-        "classes": [],
+        "functions": [],   # list[str]
+        "classes": [],     # list[str]
         "loops": 0,
         "has_input": "input(" in code.lower(),
     }
@@ -132,138 +132,273 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
     return summary
 
 
-def _guess_python_purpose(code: str) -> str:
+# -----------------------------
+# Python commenting (accurate per code)
+# -----------------------------
+
+def _op_to_words(op: ast.operator) -> Optional[str]:
+    if isinstance(op, ast.Add):
+        return "adds"
+    if isinstance(op, ast.Sub):
+        return "subtracts"
+    if isinstance(op, ast.Mult):
+        return "multiplies"
+    if isinstance(op, ast.Div):
+        return "divides"
+    if isinstance(op, ast.Mod):
+        return "takes the remainder of"
+    if isinstance(op, ast.Pow):
+        return "raises"
+    return None
+
+
+def _expr_to_name(expr: ast.AST) -> str:
     """
-    Try to describe what the program is, using safe hints (imports, keywords).
-    We keep it accurate and beginner-friendly.
+    Very small, safe stringifier for common expressions (no code-guessing).
     """
-    c = code.lower()
-
-    if "from tkinter" in c or "import tkinter" in c:
-        return "This program creates a simple desktop window (GUI) using Tkinter."
-
-    if "from turtle" in c or "import turtle" in c:
-        return "This program draws graphics on the screen using the Turtle library."
-
-    if "input(" in c:
-        return "This program runs in the terminal and asks the user questions, then performs actions based on the answers."
-
-    if "random" in c and ("randint" in c or "choice" in c):
-        return "This program uses random numbers to create a small simulation or game."
-
-    return "This Python program contains logic (functions and steps) that runs when the file is executed."
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Constant):
+        return repr(expr.value)
+    if isinstance(expr, ast.Attribute):
+        base = _expr_to_name(expr.value)
+        return f"{base}.{expr.attr}"
+    if isinstance(expr, ast.Call):
+        fn = _expr_to_name(expr.func)
+        return f"{fn}(...)"
+    if isinstance(expr, ast.Subscript):
+        return f"{_expr_to_name(expr.value)}[...]"
+    return "a value"
 
 
-def _describe_python_function(fn_name: str) -> str:
+def _infer_function_summary(fn: ast.FunctionDef) -> List[str]:
     """
-    Generate a clear beginner-friendly description based on function name.
-    We do NOT guess deep hidden behavior — we describe based on naming.
+    Build 1–3 comment lines that match the function code.
+    We do not invent behavior. We describe what we can see.
     """
-    name = fn_name.lower()
+    lines: List[str] = []
+    fn_name = fn.name
 
-    if name == "main":
-        return "Main menu loop (program starts here)."
+    # Special-case "main"
+    if fn_name.lower() == "main":
+        lines.append("Main program entry point (controls the main flow).")
 
-    # To-do list patterns
-    if "show" in name and ("task" in name or "todo" in name or "list" in name):
-        return "Show all tasks currently in the list."
-    if ("add" in name or "create" in name) and ("task" in name or "todo" in name):
-        return "Add a new task into the list."
-    if ("remove" in name or "delete" in name) and ("task" in name or "todo" in name):
-        return "Remove a task using its number (index)."
+    # Detect returns
+    returns: List[ast.Return] = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
 
-    # Calculator / numbers
-    if "calc" in name or "calculate" in name:
-        return "Calculate a result based on the input values."
-    if "sum" in name:
-        return "Add numbers together and return the result."
+    # Detect input/print usage
+    calls: List[ast.Call] = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+    called_names = []
+    for c in calls:
+        called_names.append(_expr_to_name(c.func))
 
-    # File operations
-    if "load" in name:
-        return "Load information from a file or saved storage."
-    if "save" in name:
-        return "Save information to a file or storage."
-    if "read" in name:
-        return "Read and return information."
-    if "write" in name:
-        return "Write information to a file or output."
+    uses_input = any(name.startswith("input") for name in called_names)
+    uses_print = any(name.startswith("print") for name in called_names)
 
-    # Default
-    return f"Function: {fn_name}() — performs one specific job in the program."
+    # Detect list operations like append/pop/extend
+    append_calls = []
+    pop_calls = []
+    for c in calls:
+        if isinstance(c.func, ast.Attribute) and c.func.attr == "append":
+            append_calls.append(c)
+        if isinstance(c.func, ast.Attribute) and c.func.attr == "pop":
+            pop_calls.append(c)
+
+    # Detect simple arithmetic return: a + b, a - b, etc.
+    if returns:
+        # Try first return that has a value
+        for r in returns:
+            if r.value is None:
+                continue
+
+            v = r.value
+
+            # return a + b / a - b etc.
+            if isinstance(v, ast.BinOp):
+                op_words = _op_to_words(v.op)
+                left = _expr_to_name(v.left)
+                right = _expr_to_name(v.right)
+                if op_words:
+                    # "adds a and b"
+                    if op_words == "adds":
+                        lines.append(f"Adds {left} and {right}.")
+                        lines.append(f"Returns the result of {left} + {right}.")
+                    elif op_words == "subtracts":
+                        lines.append(f"Subtracts {right} from {left}.")
+                        lines.append(f"Returns the result of {left} - {right}.")
+                    elif op_words == "multiplies":
+                        lines.append(f"Multiplies {left} by {right}.")
+                        lines.append(f"Returns the result of {left} * {right}.")
+                    elif op_words == "divides":
+                        lines.append(f"Divides {left} by {right}.")
+                        lines.append(f"Returns the result of {left} / {right}.")
+                    elif op_words == "takes the remainder of":
+                        lines.append(f"Computes the remainder of {left} divided by {right}.")
+                        lines.append(f"Returns the result of {left} % {right}.")
+                    elif op_words == "raises":
+                        lines.append(f"Raises {left} to the power of {right}.")
+                        lines.append(f"Returns the result of {left} ** {right}.")
+                    break
+
+            # return something(...) / return variable / return string
+            if isinstance(v, ast.Call):
+                lines.append(f"Returns the result of calling {_expr_to_name(v.func)}.")
+                break
+
+            if isinstance(v, ast.Name):
+                lines.append(f"Returns {v.id}.")
+                break
+
+            if isinstance(v, ast.Constant):
+                lines.append("Returns a constant value.")
+                break
+
+            # Fallback for other return expressions
+            lines.append("Returns a value based on the function logic.")
+            break
+
+    # If no meaningful return message and we saw list modifications
+    if append_calls and not any("Adds" in s or "append" in s.lower() for s in lines):
+        # Mention first append target if available
+        c0 = append_calls[0]
+        if isinstance(c0.func, ast.Attribute):
+            target = _expr_to_name(c0.func.value)
+            lines.append(f"Appends an item to {target}.")
+
+    if pop_calls and not any("Removes" in s or "pop" in s.lower() for s in lines):
+        c0 = pop_calls[0]
+        if isinstance(c0.func, ast.Attribute):
+            target = _expr_to_name(c0.func.value)
+            lines.append(f"Removes an item from {target}.")
+
+    # Mention terminal interaction if we saw it
+    if uses_input and not any("input" in s.lower() or "user" in s.lower() for s in lines):
+        lines.append("Reads input from the user in the terminal.")
+    if uses_print and not any("print" in s.lower() or "displays" in s.lower() for s in lines):
+        lines.append("Prints output to the terminal.")
+
+    # Trim duplicates / keep it short
+    dedup: List[str] = []
+    for s in lines:
+        s2 = s.strip()
+        if s2 and s2 not in dedup:
+            dedup.append(s2)
+
+    # If still empty, give a neutral statement
+    if not dedup:
+        dedup = ["Performs one specific job in the program."]
+
+    # Keep at most 3 lines (clean, not spam)
+    return dedup[:3]
 
 
 def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
     """
-    ✅ Professional Python commenting (your style):
-    - Explains purpose at top
-    - Adds clean section headers
-    - Gives meaningful descriptions for common function names
-    - Keeps comments simple and beginner-friendly
+    Professional Python commenting rules:
+    - No "what this program does" block (as requested)
+    - Clean header
+    - Imports commented once
+    - Each function gets an accurate summary based on its code
+    - Loops and try/except get short comments
+    - No spam / no repetition
     """
     code = _clean_existing_auto_headers(code)
-    info = _summarize_python_code(code)
-    purpose = _guess_python_purpose(code)
+    tree, err = _safe_parse_python(code)
 
     out: List[str] = []
     out.append("# =======================================")
     out.append("# Professional beginner-friendly comments")
     out.append("# =======================================")
     out.append(f"# File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
-    out.append("#")
-    out.append("# What this program does:")
-    out.append(f"# - {purpose}")
     out.append("")
 
-    if not info.get("parse_ok", True):
-        out.append("# NOTE:")
-        out.append("# - This file has an indentation/syntax issue.")
-        out.append("# - Fix spacing inside functions (usually 4 spaces), then try again.")
+    if tree is None:
+        # If parsing fails, we still return a clean header + original code.
+        out.append("# NOTE: This file has a syntax/indentation issue, so accurate auto-commenting is limited.")
+        out.append("# Fix indentation (usually 4 spaces), then try again for better comments.")
         out.append("")
+        out.append(code.strip())
+        return "\n".join(out).rstrip() + "\n"
+
+    # Collect function summaries
+    fn_map: Dict[int, List[str]] = {}  # lineno -> [summary lines]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            fn_map[node.lineno] = _infer_function_summary(node)
 
     lines = code.splitlines()
 
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
 
         # Imports
         if stripped.startswith("import ") or stripped.startswith("from "):
-            if not any("Imports:" in x for x in out[-6:]):
-                out.append("# Imports: bring in libraries that this file needs.")
+            # Add imports comment once
+            if not any(x.strip() == "# Imports: libraries used by this file." for x in out):
+                out.append("# Imports: libraries used by this file.")
             out.append(line)
+            i += 1
             continue
 
-        # Function definitions
+        # Function def (insert accurate summary block)
         m = re.match(r"^(\s*)def\s+([a-zA-Z_]\w*)\s*\(", line)
         if m:
             indent = m.group(1)
-            fn_name = m.group(2)
-            desc = _describe_python_function(fn_name)
+            lineno = i + 1
+            summary_lines = fn_map.get(lineno, ["Performs one specific job in the program."])
 
             out.append("")
             out.append(f"{indent}# ---------------------------------------")
-            out.append(f"{indent}# {desc}")
+            out.append(f"{indent}# Function: {m.group(2)}()")
+            for s in summary_lines:
+                out.append(f"{indent}# - {s}")
             out.append(f"{indent}# ---------------------------------------")
             out.append(line)
+            i += 1
             continue
 
-        # Loop explanations
+        # Loops
         if re.match(r"^\s*(for|while)\b", line):
             indent = re.match(r"^\s*", line).group(0)
-            out.append(f"{indent}# Loop: repeats the block below multiple times.")
+            out.append(f"{indent}# Loop: repeats the block below.")
             out.append(line)
+            i += 1
+            continue
+
+        # try/except
+        if re.match(r"^\s*try\s*:", line):
+            indent = re.match(r"^\s*", line).group(0)
+            out.append(f"{indent}# Error handling: catch errors instead of crashing.")
+            out.append(line)
+            i += 1
+            continue
+
+        if stripped.startswith("except "):
+            indent = re.match(r"^\s*", line).group(0)
+            out.append(f"{indent}# If an error happens above, this block runs.")
+            out.append(line)
+            i += 1
             continue
 
         # main guard
         if stripped == 'if __name__ == "__main__":':
             out.append("")
-            out.append("# This means: only run the program when this file is executed directly.")
+            out.append("# Run the program only when this file is executed directly.")
             out.append(line)
+            i += 1
             continue
 
         out.append(line)
+        i += 1
 
     return "\n".join(out).rstrip() + "\n"
 
+
+# -----------------------------
+# Docs generation (Python)
+# -----------------------------
 
 def _python_how_to_run(code: str, file_path: str) -> str:
     filename = os.path.basename(file_path) if file_path else "main.py"
@@ -276,23 +411,39 @@ def _python_how_to_run(code: str, file_path: str) -> str:
     steps.append(f"3. Run: `python {filename}`")
 
     if "tkinter" in c:
-        steps.append("4. A window should open. Use the buttons/fields in the window.")
+        steps.append("4. A window should open. Use the window controls.")
     elif "turtle" in c:
         steps.append("4. A drawing window should open. Wait for it to finish drawing.")
         steps.append("5. Close the window to end the program.")
     elif "input(" in c:
         steps.append("4. Follow the prompts in the terminal and type your input.")
     else:
-        steps.append("4. If nothing happens, the file may only define functions for other files to use.")
+        steps.append("4. If nothing happens, the file may only define functions used by other files.")
 
     return "\n".join(steps)
+
+
+def _guess_python_purpose(code: str) -> str:
+    """
+    Purpose for documentation (not comments).
+    """
+    c = code.lower()
+    if "from tkinter" in c or "import tkinter" in c:
+        return "Creates a desktop window (GUI) using Tkinter."
+    if "from turtle" in c or "import turtle" in c:
+        return "Draws graphics on the screen using the Turtle library."
+    if "input(" in c:
+        return "Runs in the terminal and interacts with the user through input prompts."
+    if "random" in c and ("randint" in c or "choice" in c):
+        return "Uses random numbers to create a small simulation or game."
+    return "Contains Python logic that runs when the file is executed."
 
 
 def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
     """
     Produces:
-    - commented_code
-    - documentation (beginner-friendly + step-by-step)
+    - commented_code (professional + accurate per code)
+    - documentation (beginner-friendly)
     """
     code_clean = code.replace("\r\n", "\n")
     info = _summarize_python_code(code_clean)
@@ -404,7 +555,6 @@ def _comment_css(code: str) -> str:
     out.append("/* CSS controls the LOOK of the page (colors, layout, spacing, fonts). */")
     out.append("")
 
-    # Add short notes above each rule block
     pattern = re.compile(r"([^{]+)\{([^}]*)\}", re.S)
     for m in pattern.finditer(text):
         selector = m.group(1).strip()
