@@ -18,9 +18,8 @@ AUTO_MARKERS = [
     "Beginner-friendly Java notes (auto-added)",
     "Professional beginner-friendly comments",
     "Professional beginner-friendly notes",
-    "Professional beginner-friendly CSS comments",
-    "Professional beginner-friendly JS comments",
-    "Professional beginner-friendly Java comments",
+    "Professional beginner-friendly JS notes",
+    "Professional beginner-friendly CSS notes",
 ]
 
 
@@ -55,13 +54,10 @@ def _clean_existing_auto_headers(code: str) -> str:
 
 
 # -----------------------------
-# PYTHON HELPERS (Purpose + Safe Parse)
+# Python analysis (safe)
 # -----------------------------
 
 def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
-    """
-    Parse python safely. If indentation/syntax is broken, return error string.
-    """
     try:
         return ast.parse(code), None
     except Exception as e:
@@ -70,8 +66,7 @@ def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
 
 def _summarize_python_code(code: str) -> Dict[str, Any]:
     """
-    Extract useful info using AST when possible.
-    Must NEVER crash.
+    AST summary. Must never crash.
     """
     tree, err = _safe_parse_python(code)
 
@@ -85,8 +80,8 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
         "has_input": "input(" in code.lower(),
     }
 
-    # If AST fails, do fallback regex scan
     if not tree:
+        # fallback regex summary if indentation is broken
         summary["loops"] = len(re.findall(r"\b(for|while)\b", code))
         summary["functions"] = re.findall(r"^\s*def\s+([a-zA-Z_]\w*)\s*\(", code, flags=re.M)
         summary["classes"] = re.findall(r"^\s*class\s+([a-zA-Z_]\w*)\s*[:\(]", code, flags=re.M)
@@ -102,12 +97,10 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
         def visit_Import(self, node: ast.Import) -> Any:
             for n in node.names:
                 imports.append(n.name)
-            self.generic_visit(node)
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
             if node.module:
                 imports.append(node.module)
-            self.generic_visit(node)
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
             functions.append(node.name)
@@ -141,63 +134,71 @@ def _summarize_python_code(code: str) -> Dict[str, Any]:
 
 def _guess_python_purpose(code: str) -> str:
     """
-    BEST-EFFORT purpose (based strictly on code patterns).
-    We do not invent fake descriptions.
+    Try to describe what the program is, using safe hints (imports, keywords).
+    We keep it accurate and beginner-friendly.
     """
     c = code.lower()
 
-    if "from tkinter" in c or "tkinter" in c:
-        return "This program builds a small window (GUI) using Tkinter so the user can interact with buttons and inputs."
+    if "from tkinter" in c or "import tkinter" in c:
+        return "This program creates a simple desktop window (GUI) using Tkinter."
 
-    if "from turtle" in c or "import turtle" in c or "turtle" in c:
-        return "This program uses Turtle graphics to draw shapes or patterns in a drawing window."
+    if "from turtle" in c or "import turtle" in c:
+        return "This program draws graphics on the screen using the Turtle library."
 
     if "input(" in c:
         return "This program runs in the terminal and asks the user questions, then performs actions based on the answers."
 
     if "random" in c and ("randint" in c or "choice" in c):
-        return "This program uses random numbers to create a game or simulation that changes each time it runs."
+        return "This program uses random numbers to create a small simulation or game."
 
-    return "This Python file contains code that performs a task when run, or provides functions that other files can use."
+    return "This Python program contains logic (functions and steps) that runs when the file is executed."
 
 
-def _python_run_steps(file_path: str, code: str) -> str:
+def _describe_python_function(fn_name: str) -> str:
     """
-    Beginner-friendly run steps that match what the code is doing.
+    Generate a clear beginner-friendly description based on function name.
+    We do NOT guess deep hidden behavior — we describe based on naming.
     """
-    filename = os.path.basename(file_path) if file_path else "main.py"
-    c = code.lower()
+    name = fn_name.lower()
 
-    lines: List[str] = []
-    lines.append("### Option A: Run with Python (recommended)")
-    lines.append("1. Make sure Python is installed (Python 3).")
-    lines.append("2. Open a terminal inside the folder containing the file.")
-    lines.append(f"3. Run: `python {filename}`")
+    if name == "main":
+        return "Main menu loop (program starts here)."
 
-    if "tkinter" in c or "from tkinter" in c:
-        lines.append("4. A window should open. Use the buttons/inputs in the window.")
-    elif "turtle" in c or "from turtle" in c or "import turtle" in c:
-        lines.append("4. A drawing window will open. Wait for the drawing to finish.")
-        lines.append("5. Close the window to end the program.")
-    elif "input(" in c:
-        lines.append("4. Follow the instructions in the terminal and type your answers.")
-    else:
-        lines.append("4. If nothing happens, the file may only contain helper functions meant to be imported.")
+    # To-do list patterns
+    if "show" in name and ("task" in name or "todo" in name or "list" in name):
+        return "Show all tasks currently in the list."
+    if ("add" in name or "create" in name) and ("task" in name or "todo" in name):
+        return "Add a new task into the list."
+    if ("remove" in name or "delete" in name) and ("task" in name or "todo" in name):
+        return "Remove a task using its number (index)."
 
-    return "\n".join(lines)
+    # Calculator / numbers
+    if "calc" in name or "calculate" in name:
+        return "Calculate a result based on the input values."
+    if "sum" in name:
+        return "Add numbers together and return the result."
 
+    # File operations
+    if "load" in name:
+        return "Load information from a file or saved storage."
+    if "save" in name:
+        return "Save information to a file or storage."
+    if "read" in name:
+        return "Read and return information."
+    if "write" in name:
+        return "Write information to a file or output."
 
-# -----------------------------
-# PYTHON COMMENTING (THIS IS YOUR STYLE ✅)
-# -----------------------------
+    # Default
+    return f"Function: {fn_name}() — performs one specific job in the program."
+
 
 def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
     """
-    ✅ Professional beginner-friendly comments (your style)
-    - Explains what the program does
-    - Explains key sections clearly
-    - NO spam comments per line
-    - Avoids guessing behavior we cannot see
+    ✅ Professional Python commenting (your style):
+    - Explains purpose at top
+    - Adds clean section headers
+    - Gives meaningful descriptions for common function names
+    - Keeps comments simple and beginner-friendly
     """
     code = _clean_existing_auto_headers(code)
     info = _summarize_python_code(code)
@@ -213,23 +214,20 @@ def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
     out.append(f"# - {purpose}")
     out.append("")
 
-    # Add a helpful note if parsing failed
     if not info.get("parse_ok", True):
         out.append("# NOTE:")
-        out.append("# - This file has an indentation/syntax issue, so analysis may be limited.")
+        out.append("# - This file has an indentation/syntax issue.")
         out.append("# - Fix spacing inside functions (usually 4 spaces), then try again.")
         out.append("")
 
     lines = code.splitlines()
 
-    # We only add comments at key places (imports, functions, loops, main guard)
-    for i, line in enumerate(lines):
+    for line in lines:
         stripped = line.strip()
 
         # Imports
         if stripped.startswith("import ") or stripped.startswith("from "):
-            # Only add one import comment before the first import
-            if not any("Imports" in x for x in out):
+            if not any("Imports:" in x for x in out[-6:]):
                 out.append("# Imports: bring in libraries that this file needs.")
             out.append(line)
             continue
@@ -239,27 +237,26 @@ def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
         if m:
             indent = m.group(1)
             fn_name = m.group(2)
+            desc = _describe_python_function(fn_name)
 
-            # Add a short clear explanation above the function
             out.append("")
             out.append(f"{indent}# ---------------------------------------")
-            out.append(f"{indent}# Function: {fn_name}()")
-            out.append(f"{indent}# This function handles one part of the program.")
+            out.append(f"{indent}# {desc}")
             out.append(f"{indent}# ---------------------------------------")
             out.append(line)
             continue
 
-        # Loop explanation
+        # Loop explanations
         if re.match(r"^\s*(for|while)\b", line):
             indent = re.match(r"^\s*", line).group(0)
             out.append(f"{indent}# Loop: repeats the block below multiple times.")
             out.append(line)
             continue
 
-        # Main guard explanation
+        # main guard
         if stripped == 'if __name__ == "__main__":':
             out.append("")
-            out.append("# This means: run the main program only when this file is executed directly.")
+            out.append("# This means: only run the program when this file is executed directly.")
             out.append(line)
             continue
 
@@ -268,77 +265,74 @@ def _add_python_comments(code: str, file_path: str = "pasted_code") -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _python_how_to_run(code: str, file_path: str) -> str:
+    filename = os.path.basename(file_path) if file_path else "main.py"
+    c = code.lower()
+
+    steps: List[str] = []
+    steps.append("### Option A: Run with Python (recommended)")
+    steps.append("1. Make sure Python is installed (Python 3).")
+    steps.append("2. Open a terminal in the folder containing the file.")
+    steps.append(f"3. Run: `python {filename}`")
+
+    if "tkinter" in c:
+        steps.append("4. A window should open. Use the buttons/fields in the window.")
+    elif "turtle" in c:
+        steps.append("4. A drawing window should open. Wait for it to finish drawing.")
+        steps.append("5. Close the window to end the program.")
+    elif "input(" in c:
+        steps.append("4. Follow the prompts in the terminal and type your input.")
+    else:
+        steps.append("4. If nothing happens, the file may only define functions for other files to use.")
+
+    return "\n".join(steps)
+
+
 def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
     """
     Produces:
-    - commented_code (your clean style)
-    - documentation (beginner-friendly and specific)
+    - commented_code
+    - documentation (beginner-friendly + step-by-step)
     """
     code_clean = code.replace("\r\n", "\n")
     info = _summarize_python_code(code_clean)
     loc = _count_nonempty_lines(code_clean)
 
-    purpose = _guess_python_purpose(code_clean)
-    how_to_run = _python_run_steps(file_path, code_clean)
-
     parse_note = ""
     if not info.get("parse_ok", True):
         parse_note = (
             "## Important Note\n"
-            "This file has an indentation/syntax issue, so deeper analysis may be limited.\n"
-            "Fix indentation (usually 4 spaces inside functions) and try again.\n\n"
+            "This Python file has a syntax/indentation issue, so full analysis may be limited.\n"
+            "Fix indentation (usually 4 spaces) and try again.\n\n"
         )
 
-    documentation_lines: List[str] = []
-    documentation_lines.append(f"# File Documentation - `{os.path.basename(file_path)}`")
-    documentation_lines.append("")
-    if parse_note:
-        documentation_lines.append(parse_note.strip())
-        documentation_lines.append("")
+    purpose = _guess_python_purpose(code_clean)
+    how_to = _python_how_to_run(code_clean, file_path)
 
-    documentation_lines.append("## Purpose")
-    documentation_lines.append(f"- {purpose}")
-    documentation_lines.append("")
+    documentation = (
+        f"# File Documentation - `{os.path.basename(file_path)}`\n\n"
+        f"{parse_note}"
+        f"## Purpose\n"
+        f"- {purpose}\n\n"
+        f"## Key Components\n"
+        f"- Lines of code (non-empty): **{loc}**\n"
+        f"- Imports detected: **{len(info.get('imports', []))}**\n"
+        f"- Loops detected: **{info.get('loops', 0)}**\n"
+        f"- Functions detected: **{len(info.get('functions', []))}**\n"
+        f"- Classes detected: **{len(info.get('classes', []))}**\n\n"
+        f"## Inputs / Outputs\n"
+        f"- **Inputs:** {'User types input in terminal (`input(...)`).' if info.get('has_input') else 'Function parameters or user actions.'}\n"
+        f"- **Outputs:** printed text, returned values, or UI changes.\n\n"
+        f"## How to run (step-by-step)\n"
+        f"{how_to}\n"
+    )
 
-    documentation_lines.append("## Key Components")
-    documentation_lines.append(f"- Lines of code (non-empty): **{loc}**")
-    documentation_lines.append(f"- Imports detected: **{len(info.get('imports', []))}**")
-    documentation_lines.append(f"- Loops detected: **{info.get('loops', 0)}**")
-    documentation_lines.append(f"- Functions detected: **{len(info.get('functions', []))}**")
-    documentation_lines.append(f"- Classes detected: **{len(info.get('classes', []))}**")
-    documentation_lines.append("")
-
-    if info.get("functions"):
-        documentation_lines.append("### Functions")
-        for fn in info["functions"]:
-            documentation_lines.append(f"- `{fn}()` – a function that handles part of the program logic.")
-        documentation_lines.append("")
-
-    documentation_lines.append("## Inputs / Outputs")
-    if info.get("has_input"):
-        documentation_lines.append("- **Input:** the user types values in the terminal (because `input(...)` is used).")
-    else:
-        documentation_lines.append("- **Input:** function arguments or user actions (GUI/program events).")
-    documentation_lines.append("- **Output:** printed messages, returned values, or changes on the screen/window.")
-    documentation_lines.append("")
-
-    documentation_lines.append("## How to run (Step-by-step)")
-    documentation_lines.append(how_to_run)
-    documentation_lines.append("")
-
-    documentation_lines.append("## Important Notes")
-    documentation_lines.append("- If the program needs extra files (images/data), they must be inside the same folder or correct path.")
-    documentation_lines.append("- If nothing happens when you run it, the file may only contain helper functions for other files.")
-    documentation_lines.append("")
-
-    documentation = "\n".join(documentation_lines).strip() + "\n"
-    commented_code = _add_python_comments(code_clean, file_path)
-
+    commented_code = _add_python_comments(code_clean, file_path=file_path)
     return {"commented_code": commented_code, "documentation": documentation}
 
 
 # -----------------------------
-# HTML COMMENTING (Clean + Professional)
+# HTML (professional comments)
 # -----------------------------
 
 def _comment_html(code: str) -> str:
@@ -349,14 +343,14 @@ def _comment_html(code: str) -> str:
     out.append("<!-- ======================================= -->")
     out.append("<!-- Professional beginner-friendly comments -->")
     out.append("<!-- ======================================= -->")
-    out.append("<!-- This file defines the structure of a web page. -->")
+    out.append("<!-- This file defines the STRUCTURE of a web page. -->")
     out.append("")
 
     seen = set()
 
-    def add_once(key: str, text: str):
+    def add_once(key: str, comment: str):
         if key not in seen:
-            out.append(text)
+            out.append(comment)
             seen.add(key)
 
     for line in lines:
@@ -365,21 +359,21 @@ def _comment_html(code: str) -> str:
         if s.startswith("<!doctype"):
             add_once("doctype", "<!-- DOCTYPE: tells the browser this is modern HTML5 -->")
         if s.startswith("<html"):
-            add_once("html", "<!-- <html>: the root element that wraps the entire page -->")
+            add_once("html", "<!-- <html>: the root element of the whole page -->")
         if s.startswith("<head"):
-            add_once("head", "<!-- <head>: contains settings like title, CSS links and meta tags -->")
+            add_once("head", "<!-- <head>: page settings (title, CSS links, meta tags) -->")
         if s.startswith("<title"):
-            add_once("title", "<!-- <title>: name shown on the browser tab -->")
+            add_once("title", "<!-- <title>: text shown on the browser tab -->")
         if s.startswith("<body"):
             add_once("body", "<!-- <body>: everything the user can see on the page -->")
         if s.startswith("<header"):
-            add_once("header", "<!-- <header>: the top section (logo/title/menu) -->")
+            add_once("header", "<!-- <header>: top section (logo/title/menu) -->")
         if s.startswith("<main"):
-            add_once("main", "<!-- <main>: the main content area -->")
+            add_once("main", "<!-- <main>: main page content area -->")
         if s.startswith("<footer"):
-            add_once("footer", "<!-- <footer>: bottom of the page (links/copyright) -->")
+            add_once("footer", "<!-- <footer>: bottom section (copyright/links) -->")
         if s.startswith("<script"):
-            add_once("script", "<!-- <script>: JavaScript code that adds behavior (clicks/actions) -->")
+            add_once("script", "<!-- <script>: JavaScript that adds behavior to the page -->")
 
         out.append(line)
 
@@ -387,24 +381,118 @@ def _comment_html(code: str) -> str:
 
 
 # -----------------------------
-# CSS COMMENTING (Clean + Pro)
+# CSS (professional comments)
 # -----------------------------
+
+def _explain_css_selector(selector: str) -> str:
+    sel = selector.strip()
+    if sel.startswith("."):
+        return f"Targets elements with class `{sel[1:]}`."
+    if sel.startswith("#"):
+        return f"Targets the element with id `{sel[1:]}`."
+    return f"Targets all `<{sel}>` elements."
+
 
 def _comment_css(code: str) -> str:
     code = _clean_existing_auto_headers(code)
+    text = code.strip()
 
     out: List[str] = []
     out.append("/* ======================================= */")
     out.append("/* Professional beginner-friendly comments */")
     out.append("/* ======================================= */")
-    out.append("/* CSS controls the LOOK of the page: colors, layout, spacing, and fonts. */")
+    out.append("/* CSS controls the LOOK of the page (colors, layout, spacing, fonts). */")
     out.append("")
-    out.append(code.strip())
+
+    # Add short notes above each rule block
+    pattern = re.compile(r"([^{]+)\{([^}]*)\}", re.S)
+    for m in pattern.finditer(text):
+        selector = m.group(1).strip()
+        body = m.group(2).strip()
+
+        out.append(f"/* {_explain_css_selector(selector)} */")
+        out.append(f"{selector} {{")
+
+        for line in body.splitlines():
+            t = line.strip()
+            if not t:
+                continue
+
+            if t.startswith("display:"):
+                out.append(f"  {t} /* layout mode */")
+            elif t.startswith("gap:"):
+                out.append(f"  {t} /* space between items */")
+            elif t.startswith("background"):
+                out.append(f"  {t} /* background color */")
+            elif t.startswith("color:"):
+                out.append(f"  {t} /* text color */")
+            elif t.startswith("font-family"):
+                out.append(f"  {t} /* font style */")
+            elif t.startswith("padding"):
+                out.append(f"  {t} /* inner spacing */")
+            elif t.startswith("margin"):
+                out.append(f"  {t} /* outer spacing */")
+            else:
+                out.append(f"  {t}")
+
+        out.append("}")
+        out.append("")
+
     return "\n".join(out).rstrip() + "\n"
 
 
 # -----------------------------
-# JAVASCRIPT COMMENTING (You said it's OK)
+# Java (professional comments)
+# -----------------------------
+
+def _comment_java(code: str) -> str:
+    code = _clean_existing_auto_headers(code)
+    lines = code.splitlines()
+    out: List[str] = []
+
+    out.append("// =======================================")
+    out.append("// Professional beginner-friendly comments")
+    out.append("// =======================================")
+    out.append("// This file defines a Java class and its methods.")
+    out.append("")
+
+    for line in lines:
+        s = line.strip()
+
+        if re.match(r"^public\s+class\s+\w+", s):
+            out.append("// Class: a container that holds methods (functions) and data.")
+            out.append(line)
+            continue
+
+        if re.match(r"^public\s+static\s+void\s+main\s*\(", s):
+            out.append("// main(): the program starts running here.")
+            out.append(line)
+            continue
+
+        m = re.match(r"^public\s+static\s+(\w+)\s+(\w+)\s*\((.*?)\)", s)
+        if m and "main" not in s:
+            ret_type = m.group(1)
+            name = m.group(2)
+            args = m.group(3).strip()
+
+            out.append(f"// Method: {name}()")
+            out.append(f"// - Returns: {ret_type}")
+            out.append(f"// - Inputs: {args if args else 'none'}")
+            out.append(line)
+            continue
+
+        if s.startswith("return "):
+            out.append("// Return: send the result back to whoever called this method.")
+            out.append(line)
+            continue
+
+        out.append(line)
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+# -----------------------------
+# JavaScript (you said it is OK)
 # -----------------------------
 
 def _comment_js(code: str) -> str:
@@ -419,48 +507,7 @@ def _comment_js(code: str) -> str:
 
 
 # -----------------------------
-# JAVA COMMENTING (Clean + Pro)
-# -----------------------------
-
-def _comment_java(code: str) -> str:
-    code = _clean_existing_auto_headers(code)
-    lines = code.splitlines()
-    out: List[str] = []
-
-    out.append("// =======================================")
-    out.append("// Professional beginner-friendly comments")
-    out.append("// =======================================")
-    out.append("// This file defines Java classes and methods used in a Java program.")
-    out.append("")
-
-    for line in lines:
-        s = line.strip()
-
-        if re.match(r"^public\s+class\s+\w+", s):
-            out.append("// Class: a container that groups methods together.")
-            out.append(line)
-            continue
-
-        if re.match(r"^public\s+static\s+void\s+main\s*\(", s):
-            out.append("// main(): the program starts running here.")
-            out.append(line)
-            continue
-
-        m = re.match(r"^public\s+static\s+(\w+)\s+(\w+)\s*\((.*?)\)", s)
-        if m and "main" not in s:
-            out.append(f"// Method: {m.group(2)}()")
-            out.append(f"// - Returns: {m.group(1)}")
-            out.append(f"// - Inputs: {m.group(3).strip() or 'none'}")
-            out.append(line)
-            continue
-
-        out.append(line)
-
-    return "\n".join(out).rstrip() + "\n"
-
-
-# -----------------------------
-# SIMPLE DOCS FOR NON-PYTHON FILES
+# Public API for non-Python
 # -----------------------------
 
 def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
@@ -469,7 +516,6 @@ def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code
     loc = _count_nonempty_lines(code_clean)
     filename = os.path.basename(file_path) if file_path else "pasted_code"
 
-    # Commenting
     commented = code_clean
     if language == "html":
         commented = _comment_html(code_clean)
@@ -482,7 +528,7 @@ def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code
 
     purpose_map = {
         "html": "Defines the structure/content of a web page.",
-        "css": "Defines styles (colors/layout/fonts) of a web page.",
+        "css": "Defines the styles (colors/layout/fonts) of a web page.",
         "javascript": "Adds behavior/logic to a web page.",
         "java": "Defines a class and methods used in a Java program.",
     }
@@ -511,6 +557,6 @@ def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code
             "3. Run (if it has main): `java FileName`\n"
         )
     else:
-        documentation += "Run steps depend on the project setup.\n"
+        documentation += "Run steps depend on the project.\n"
 
     return {"commented_code": commented.rstrip() + "\n", "documentation": documentation}
