@@ -10,12 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 # ============================================================
 
 AUTO_MARKERS = [
+    # Old headers you want removed
+    "Professional beginner-friendly comments",
     "Beginner-friendly comments (auto-added)",
     "Beginner-friendly notes (auto-added)",
     "Beginner-friendly CSS notes (auto-added)",
     "Beginner-friendly JS notes (auto-added)",
     "Beginner-friendly Java notes (auto-added)",
-    "Professional beginner-friendly comments",
     "Professional beginner-friendly notes",
     "Professional beginner-friendly CSS notes",
     "Professional beginner-friendly JS notes",
@@ -29,19 +30,15 @@ def _count_nonempty_lines(code: str) -> int:
 
 def _clean_existing_auto_headers(code: str) -> str:
     """
-    Remove previously generated auto headers so we do not stack them forever.
-    Works across Python/HTML/CSS/JS/Java.
-
-    Strategy:
-    - If we see any known marker, we skip lines until we hit the first blank line.
-    - This removes the whole header block cleanly.
+    Removes previously generated header blocks so they don't stack.
+    We keep it simple: if we detect marker lines, we skip until a blank line.
     """
     lines = code.splitlines()
     out: List[str] = []
-
     skipping = False
+
     for line in lines:
-        if any(m in line for m in AUTO_MARKERS):
+        if any(m.lower() in line.lower() for m in AUTO_MARKERS):
             skipping = True
             continue
 
@@ -72,52 +69,40 @@ def _doc_sectioned_no_code(
     edge_cases: List[str],
 ) -> str:
     """
-    Docs structure WITHOUT the "code" section (as requested).
+    Docs structure WITHOUT code section (as you requested).
     """
     lines: List[str] = []
     lines.append(f"# {title}")
     lines.append("")
-
-    # Your requested structure (without code section)
-    lines.append("## 2) What it does")
+    lines.append("## What it does")
     for x in what_it_does:
         lines.append(f"- {x}")
     lines.append("")
-
-    lines.append("## 3) Requirements")
+    lines.append("## Requirements")
     for x in requirements:
         lines.append(f"- {x}")
     lines.append("")
-
-    lines.append("## 4) How to run")
+    lines.append("## How to run")
     for x in how_to_run:
         lines.append(x)
     lines.append("")
-
-    lines.append("## 5) Explanation of logic")
+    lines.append("## Explanation of logic")
     for x in logic:
         lines.append(f"- {x}")
     lines.append("")
-
-    lines.append("## 6) Example input/output")
+    lines.append("## Example input/output")
     for x in examples:
         lines.append(f"- {x}")
     lines.append("")
-
-    lines.append("## 7) Edge cases / notes")
+    lines.append("## Edge cases / notes")
     for x in edge_cases:
         lines.append(f"- {x}")
     lines.append("")
-
     return "\n".join(lines).strip() + "\n"
 
 
-def _indent_of(line: str) -> str:
-    return re.match(r"^\s*", line).group(0)
-
-
 # ============================================================
-# PYTHON (universal, AST-based meaning)
+# Python: comment "confusing lines" only
 # ============================================================
 
 def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
@@ -127,97 +112,31 @@ def _safe_parse_python(code: str) -> Tuple[Optional[ast.AST], Optional[str]]:
         return None, f"{type(e).__name__}: {e}"
 
 
-def _py_expr_to_english(expr: ast.AST) -> str:
-    """
-    Convert a Python expression into a beginner-friendly description.
-    IMPORTANT: We do not guess; we describe visible operations only.
-    """
-    if isinstance(expr, ast.Constant):
-        if isinstance(expr.value, str):
-            return "a text value"
-        if expr.value is None:
-            return "None"
-        return "a constant value"
-
-    if isinstance(expr, ast.Name):
-        return f"the value of `{expr.id}`"
-
-    if isinstance(expr, ast.Attribute):
-        base = _py_expr_to_english(expr.value)
-        return f"{base}.{expr.attr}"
-
-    if isinstance(expr, ast.Call):
-        fn = expr.func
-        fn_name = ""
-        if isinstance(fn, ast.Name):
-            fn_name = fn.id
-        elif isinstance(fn, ast.Attribute):
-            fn_name = fn.attr
-        else:
-            fn_name = "a function"
-
-        return f"the result of calling `{fn_name}(...)`"
-
-    if isinstance(expr, ast.BinOp):
-        left = _py_expr_to_english(expr.left)
-        right = _py_expr_to_english(expr.right)
-
-        if isinstance(expr.op, ast.Add):
-            return f"the sum of {left} and {right}"
-        if isinstance(expr.op, ast.Sub):
-            return f"the difference between {left} and {right}"
-        if isinstance(expr.op, ast.Mult):
-            return f"the product of {left} and {right}"
-        if isinstance(expr.op, ast.Div):
-            return f"{left} divided by {right}"
-        return "a computed value"
-
-    if isinstance(expr, ast.Compare):
-        return "a true/false comparison result"
-
-    if isinstance(expr, ast.Dict):
-        return "a dictionary (key-value mapping)"
-
-    if isinstance(expr, ast.List):
-        return "a list of values"
-
-    if isinstance(expr, ast.Tuple):
-        return "a tuple of values"
-
-    if isinstance(expr, ast.JoinedStr):
-        return "a formatted text (f-string)"
-
-    return "a computed value"
-
-
-def _summarize_python(code: str) -> Dict[str, Any]:
+def _python_summarize(code: str) -> Dict[str, Any]:
     tree, err = _safe_parse_python(code)
     info: Dict[str, Any] = {
         "parse_ok": tree is not None,
         "parse_error": err,
         "imports": [],
+        "functions": [],  # [{"name":..., "args":[...], "returns":bool}]
         "classes": [],
-        "loops": 0,
         "has_input": "input(" in code.lower(),
         "has_print": "print(" in code.lower(),
-        # functions: list of dicts:
-        # {name, args, returns_value(bool), return_desc(str|None)}
-        "functions": [],
+        "loops": 0,
     }
 
     if not tree:
-        # fallback regex (limited)
         info["imports"] = re.findall(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", code, flags=re.M)
         info["classes"] = re.findall(r"^\s*class\s+([a-zA-Z_]\w*)", code, flags=re.M)
         info["loops"] = len(re.findall(r"\b(for|while)\b", code))
         fn_names = re.findall(r"^\s*def\s+([a-zA-Z_]\w*)\s*\(", code, flags=re.M)
-        info["functions"] = [{"name": n, "args": [], "returns_value": True, "return_desc": None} for n in fn_names]
+        info["functions"] = [{"name": n, "args": [], "returns": True} for n in fn_names]
         return info
 
     imports: List[str] = []
     classes: List[str] = []
-    loops = 0
     functions: List[Dict[str, Any]] = []
+    loops = 0
 
     class V(ast.NodeVisitor):
         def visit_Import(self, node: ast.Import) -> Any:
@@ -232,6 +151,12 @@ def _summarize_python(code: str) -> Dict[str, Any]:
             classes.append(node.name)
             self.generic_visit(node)
 
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+            args = [a.arg for a in node.args.args]
+            returns = any(isinstance(n, ast.Return) and n.value is not None for n in ast.walk(node))
+            functions.append({"name": node.name, "args": args, "returns": returns})
+            self.generic_visit(node)
+
         def visit_For(self, node: ast.For) -> Any:
             nonlocal loops
             loops += 1
@@ -242,91 +167,195 @@ def _summarize_python(code: str) -> Dict[str, Any]:
             loops += 1
             self.generic_visit(node)
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
-            arg_names = [a.arg for a in node.args.args]
-
-            # Find return statements and describe the most informative one
-            return_nodes = [n for n in ast.walk(node) if isinstance(n, ast.Return)]
-            returns_value = any(r.value is not None for r in return_nodes)
-
-            return_desc: Optional[str] = None
-            for r in return_nodes:
-                if r.value is not None:
-                    return_desc = _py_expr_to_english(r.value)
-                    break
-
-            functions.append(
-                {
-                    "name": node.name,
-                    "args": arg_names,
-                    "returns_value": returns_value,
-                    "return_desc": return_desc,
-                }
-            )
-            self.generic_visit(node)
-
     V().visit(tree)
-
     info["imports"] = sorted(set(imports))
     info["classes"] = classes
-    info["loops"] = loops
     info["functions"] = functions
+    info["loops"] = loops
     return info
 
 
-def _python_docs(code: str, file_path: str, info: Dict[str, Any]) -> str:
-    title = _filename_title(file_path, "python")
+def _py_should_comment_line(s: str) -> bool:
+    """
+    Decide which lines beginners usually struggle with.
+    We avoid commenting every simple line.
+    """
+    if not s:
+        return False
+    if s.startswith("#"):
+        return False
 
+    confusing_tokens = [
+        "lambda ",
+        " with ",
+        " as ",
+        "try:",
+        "except",
+        "raise ",
+        "yield ",
+        "async ",
+        "await ",
+        "import ",
+        "from ",
+        "return ",
+        "for ",
+        "while ",
+        "if ",
+        "elif ",
+        "else:",
+        "class ",
+        "def ",
+    ]
+    if any(s.startswith(t.strip()) for t in confusing_tokens):
+        return True
+
+    # patterns that confuse beginners
+    if "{" in s and "}" in s:  # dict literals
+        return True
+    if "[" in s and "]" in s and " for " in s:  # list comprehension
+        return True
+    if "sum(" in s or "sorted(" in s or "max(" in s or "min(" in s:
+        return True
+    if ".get(" in s or ".append(" in s or ".pop(" in s:
+        return True
+    if "int(" in s or "float(" in s or "str(" in s:
+        return True
+    if "__name__" in s:
+        return True
+
+    return False
+
+
+def _py_comment_for_line(s: str) -> Optional[str]:
+    """
+    Safe explanations based on visible syntax.
+    No guessing business logic.
+    """
+    st = s.strip()
+
+    if st.startswith("import ") or st.startswith("from "):
+        return "# Bring in code from another library/file."
+
+    if st.startswith("class "):
+        return "# Define a class (a blueprint for creating objects)."
+
+    if st.startswith("def "):
+        return "# Define a function (a reusable block of steps)."
+
+    if st.startswith("if __name__"):
+        return "# Run the code below only when this file is executed directly."
+
+    if st.startswith("for "):
+        return "# Loop through items one by one."
+
+    if st.startswith("while "):
+        return "# Keep looping while the condition stays true."
+
+    if st.startswith("try:"):
+        return "# Try running the code below; if it fails, handle it in `except`."
+
+    if st.startswith("except"):
+        return "# Handle an error so the program does not crash."
+
+    if st.startswith("return "):
+        return "# Send a result back to whoever called this function."
+
+    if "lambda " in st:
+        return "# A small one-line function (lambda) used as a quick helper."
+
+    if " with " in st and ":" in st:
+        return "# Open/use something safely; it will close/clean up automatically."
+
+    if "int(" in st or "float(" in st:
+        return "# Convert a value into a number type."
+
+    if ".append(" in st:
+        return "# Add a new item to a list."
+
+    if ".pop(" in st:
+        return "# Remove and return an item from a list."
+
+    if ".get(" in st:
+        return "# Read a value from a dictionary safely (with a default if missing)."
+
+    if "sum(" in st:
+        return "# Add up many numbers to get a total."
+
+    if "sorted(" in st:
+        return "# Sort items into a new ordered list."
+
+    if "[" in st and "]" in st and " for " in st:
+        return "# Build a new list in one line (list comprehension)."
+
+    if "{" in st and "}" in st:
+        return "# Create a dictionary (key → value mapping)."
+
+    return None
+
+
+def _python_add_comments(code: str, file_path: str, info: Dict[str, Any]) -> str:
+    code = _clean_existing_auto_headers(code)
+    lines = code.splitlines()
+    out: List[str] = []
+
+    # No annoying headers. Just a simple file label (optional).
+    out.append(f"# File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
+    out.append("")
+
+    for line in lines:
+        s = line.strip()
+        if _py_should_comment_line(s):
+            c = _py_comment_for_line(s)
+            if c:
+                indent = re.match(r"^\s*", line).group(0)
+                out.append(f"{indent}{c}")
+        out.append(line)
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _python_docs(code: str, file_path: str, info: Dict[str, Any]) -> str:
     what: List[str] = []
     if info.get("has_input"):
-        what.append("Runs in the terminal and reads user input using `input(...)`.")
+        what.append("Runs in the terminal and asks the user for input.")
     else:
-        what.append("Defines functions/classes and runs code when executed (or when functions are called).")
-
+        what.append("Defines functions/classes that run when executed or imported.")
     if info.get("functions"):
-        what.append(f"Defines {len(info['functions'])} function(s) to organize logic.")
+        what.append(f"Contains {len(info['functions'])} function(s).")
     if info.get("classes"):
-        what.append(f"Defines {len(info['classes'])} class(es) for structure.")
+        what.append(f"Contains {len(info['classes'])} class(es).")
 
-    req = ["Python 3.10+ recommended"]
+    requirements = ["Python 3 installed"]
 
     how = [
         "1. Open a terminal in the folder containing the file.",
         f"2. Run: `python {os.path.basename(file_path) if file_path else 'main.py'}`",
-        "3. Follow any prompts printed in the terminal (if any).",
+        "3. Follow any prompts (if the code asks for input).",
     ]
 
-    logic: List[str] = [
-        "Imports run first (if any).",
-        "Function/class definitions set up reusable parts of the program.",
-        "If present, `if __name__ == '__main__'` runs the entry point.",
+    logic = [
+        "Python reads the file top-to-bottom.",
+        "Imports load first, then functions/classes are defined.",
+        "If present, the `if __name__ == '__main__'` block runs last.",
     ]
     if info.get("loops"):
-        logic.append("Loops repeat blocks of code until the loop ends or the program exits.")
+        logic.append("Loops repeat parts of the code multiple times.")
 
-    examples: List[str] = []
-    if info.get("has_input"):
-        examples = [
-            "Input: user types values when prompted.",
-            "Output: messages or results printed in the terminal.",
-        ]
-    else:
-        examples = [
-            "Input: function arguments (when functions are called).",
-            "Output: return values and/or printed output depending on the code.",
-        ]
+    examples = [
+        "Input: values typed by the user (if input is used) or function arguments.",
+        "Output: printed text, saved files, or returned values depending on the code.",
+    ]
 
-    edge: List[str] = []
+    edge = []
     if not info.get("parse_ok"):
-        edge.append(f"⚠ Python parse error: {info.get('parse_error')}")
-        edge.append("Fix indentation/syntax to improve comment accuracy.")
-    edge.append("If a function expects numbers, passing text may cause errors unless handled.")
-    edge.append("If the script reads files, the file path must exist.")
+        edge.append(f"Syntax/indentation error: {info.get('parse_error')}")
+    edge.append("If the code converts strings to numbers, invalid input can cause errors.")
+    edge.append("If the code reads files, missing files will cause errors unless handled.")
 
     return _doc_sectioned_no_code(
-        title=title,
+        title=_filename_title(file_path, "python"),
         what_it_does=what,
-        requirements=req,
+        requirements=requirements,
         how_to_run=how,
         logic=logic,
         examples=examples,
@@ -334,254 +363,137 @@ def _python_docs(code: str, file_path: str, info: Dict[str, Any]) -> str:
     )
 
 
-def _python_add_comments(code: str, file_path: str, info: Dict[str, Any]) -> str:
-    """
-    Universal Python comments that are:
-    - line-aware (placed directly above relevant lines)
-    - specific (return descriptions describe actual operations)
-    - not spammy (no useless repeated blocks)
-    """
-    code = _clean_existing_auto_headers(code)
-    lines = code.splitlines()
-    out: List[str] = []
-
-    out.append("# =======================================")
-    out.append("# Professional beginner-friendly comments")
-    out.append("# =======================================")
-    out.append(f"# File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
-    out.append("")
-
-    fn_map: Dict[str, Dict[str, Any]] = {f["name"]: f for f in info.get("functions", []) if isinstance(f, dict)}
-
-    for line in lines:
-        s = line.strip()
-        indent = _indent_of(line)
-
-        # imports
-        if s.startswith("import ") or s.startswith("from "):
-            out.append(f"{indent}# Import: bring in libraries this file needs.")
-            out.append(line)
-            continue
-
-        # class
-        m_class = re.match(r"^(\s*)class\s+([A-Za-z_]\w*)\b", line)
-        if m_class:
-            cname = m_class.group(2)
-            out.append("")
-            out.append(f"{indent}# Class: `{cname}` groups related data and methods.")
-            out.append(line)
-            continue
-
-        # function
-        m_fn = re.match(r"^(\s*)def\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*:", line)
-        if m_fn:
-            fname = m_fn.group(2)
-            args_raw = m_fn.group(3).strip()
-
-            meta = fn_map.get(fname, {})
-            returns_value = bool(meta.get("returns_value", True))
-            return_desc = meta.get("return_desc")
-
-            out.append("")
-            out.append(f"{indent}# ---------------------------------------")
-            out.append(f"{indent}# Function: {fname}()")
-            if args_raw:
-                out.append(f"{indent}# Inputs: {args_raw}")
-            else:
-                out.append(f"{indent}# Inputs: (none)")
-
-            if returns_value:
-                if return_desc:
-                    out.append(f"{indent}# Output: returns {return_desc}.")
-                else:
-                    out.append(f"{indent}# Output: returns a value to the caller.")
-            else:
-                out.append(f"{indent}# Output: performs an action (side effects) and returns nothing.")
-            out.append(f"{indent}# ---------------------------------------")
-
-            out.append(line)
-            continue
-
-        # try/except
-        if re.match(r"^\s*try\s*:\s*$", line):
-            out.append(f"{indent}# Error handling: run code that might fail; errors go to `except`.")
-            out.append(line)
-            continue
-
-        if re.match(r"^\s*except\b", line):
-            out.append(f"{indent}# If an error happened above, handle it here instead of crashing.")
-            out.append(line)
-            continue
-
-        # loops
-        if re.match(r"^\s*(for|while)\b", line):
-            out.append(f"{indent}# Loop: repeat the next block multiple times.")
-            out.append(line)
-            continue
-
-        # return
-        if re.match(r"^\s*return\b", line):
-            out.append(f"{indent}# Return: send a result back to the caller.")
-            out.append(line)
-            continue
-
-        out.append(line)
-
-    return "\n".join(out).rstrip() + "\n"
-
-
 def generate_python_docs(code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
     code_clean = code.replace("\r\n", "\n")
-    info = _summarize_python(code_clean)
+    info = _python_summarize(code_clean)
     documentation = _python_docs(code_clean, file_path, info)
     commented_code = _python_add_comments(code_clean, file_path, info)
     return {"commented_code": commented_code, "documentation": documentation}
 
 
 # ============================================================
-# JAVASCRIPT (universal, line-aware, less ugly)
+# JavaScript: ALWAYS produce valid JS comments, line-aware
 # ============================================================
 
-_JS_FUNC_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*\{?")
-_JS_ARROW_RE = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\(?(.+?)\)?\s*=>")
-_JS_RETURN_RE = re.compile(r"^\s*return\b")
-_JS_IF_RE = re.compile(r"^\s*if\s*\(")
-_JS_FOR_RE = re.compile(r"^\s*for\s*\(")
-_JS_WHILE_RE = re.compile(r"^\s*while\s*\(")
-_JS_TRY_RE = re.compile(r"^\s*try\s*\{?\s*$")
-_JS_CATCH_RE = re.compile(r"^\s*catch\s*\(")
+_JS_FUNC_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)\s*\((.*?)\)")
+_JS_ARROW_RE = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\((.*?)\)\s*=>")
+_JS_EVENT_RE = re.compile(r"\.addEventListener\s*\(")
+
+def _js_should_comment(s: str) -> bool:
+    if not s or s.startswith("//") or s.startswith("/*") or s.startswith("*"):
+        return False
+
+    starts = (
+        "import ", "export ",
+        "function ", "async function ",
+        "class ",
+        "if (", "for (", "while (",
+        "try", "catch",
+        "return ",
+        "const ", "let ", "var ",
+    )
+    if any(s.startswith(x) for x in starts):
+        return True
+
+    if "await " in s or "fetch(" in s:
+        return True
+    if "document." in s or "querySelector" in s or "getElementById" in s or "createElement" in s:
+        return True
+    if _JS_EVENT_RE.search(s):
+        return True
+    if "map(" in s or "filter(" in s or "reduce(" in s or "sort(" in s:
+        return True
+    if "JSON.parse" in s or "JSON.stringify" in s:
+        return True
+    if "console.log" in s or "alert(" in s or "prompt(" in s:
+        return True
+
+    return False
 
 
-def _js_return_desc(line: str) -> Optional[str]:
-    """
-    Try to describe what is being returned, based only on visible syntax.
-    """
-    s = line.strip()
-    if not s.startswith("return"):
-        return None
+def _js_comment_for_line(s: str) -> Optional[str]:
+    st = s.strip()
 
-    # return a + b
-    if re.search(r"return\s+.+\s*\+\s*.+", s):
-        return "Return: send back the result of an addition/concatenation."
+    if st.startswith("import "):
+        return "// Import code from another module."
+    if st.startswith("export "):
+        return "// Export this so other files can use it."
 
-    # return `Hello ${name}`
-    if "`" in s and "${" in s:
-        return "Return: send back a formatted text (template string)."
-
-    # return someFunction(...)
-    if re.search(r"return\s+[A-Za-z_]\w*\s*\(", s):
-        return "Return: send back the result of calling a function."
-
-    # return object/array literal
-    if re.search(r"return\s+\{", s):
-        return "Return: send back an object (key-value data)."
-    if re.search(r"return\s+\[", s):
-        return "Return: send back an array (list of values)."
-
-    return "Return: send a value back to the caller."
-
-
-def _js_line_comment(line: str) -> Optional[str]:
-    """
-    Returns a short comment for a single JS line when we can.
-    Universal rules:
-    - explain syntax patterns without guessing behavior
-    - comments should match the exact next line
-    """
-    s = line.strip()
-    if not s:
-        return None
-
-    # obvious broken line like: aler
-    if re.fullmatch(r"[A-Za-z_]\w*", s) and s not in ("true", "false", "null", "undefined"):
-        return f"// ⚠ Possible typo or incomplete statement: `{s}`"
-
-    # import/export
-    if s.startswith("import "):
-        return "// Import: bring in code from another file/package."
-    if s.startswith("export "):
-        return "// Export: make this available to other modules."
-
-    # function declarations
-    m = _JS_FUNC_RE.match(line)
+    m = _JS_FUNC_RE.match(st)
     if m:
-        name = m.group(1)
-        args = m.group(2).strip()
-        if "async" in s.split():
-            return f"// Function: {name}({args}) — async function (can use await)."
-        return f"// Function: {name}({args}) — reusable block of logic."
+        name, args = m.group(1), m.group(2)
+        if st.startswith("async"):
+            return f"// Define async function {name}({args}) — can wait for promises using await."
+        return f"// Define function {name}({args}) — reusable block of steps."
 
-    # arrow functions
-    m2 = _JS_ARROW_RE.match(line)
+    m2 = _JS_ARROW_RE.match(st)
     if m2:
-        name = m2.group(1)
-        args = (m2.group(2) or "").strip()
-        if "async" in s:
-            return f"// Function: {name}({args}) — async arrow function."
-        return f"// Function: {name}({args}) — arrow function."
+        name, args = m2.group(1), m2.group(2)
+        if "async" in st:
+            return f"// {name}({args}) — async arrow function."
+        return f"// {name}({args}) — arrow function (a short way to write a function)."
 
-    # variables
-    if s.startswith("const ") or s.startswith("let ") or s.startswith("var "):
-        if "prompt(" in s:
-            return "// Input: ask the user for a value (browser prompt)."
-        if "fetch(" in s:
-            return "// Network: start an HTTP request using fetch()."
-        return "// Variable: store a value for later use."
+    if st.startswith(("const ", "let ", "var ")):
+        if "document.getElementById" in st or "querySelector" in st:
+            return "// Get an element from the page so we can read or update it."
+        if "createElement" in st:
+            return "// Create a new HTML element in JavaScript."
+        if "fetch(" in st:
+            return "// Start an API request (fetch)."
+        return "// Create a variable to store a value."
 
-    # control flow
-    if _JS_IF_RE.match(line):
-        return "// If: run the next block only when the condition is true."
-    if _JS_FOR_RE.match(line):
-        return "// For-loop: repeat the next block for each iteration."
-    if _JS_WHILE_RE.match(line):
-        return "// While-loop: keep repeating while the condition stays true."
-    if _JS_TRY_RE.match(line):
-        return "// Try: run code that might throw an error."
-    if _JS_CATCH_RE.match(line):
-        return "// Catch: handle errors from the try block."
+    if st.startswith("if ("):
+        return "// Only run the next block when the condition is true."
+    if st.startswith("for ("):
+        return "// Loop: repeat the next block multiple times."
+    if st.startswith("while ("):
+        return "// Loop: keep repeating while the condition stays true."
+    if st.startswith("try"):
+        return "// Try running code that might fail; errors go to catch."
+    if st.startswith("catch"):
+        return "// Handle an error so the app does not crash."
+    if st.startswith("return"):
+        return "// Return a result back to the caller."
 
-    # return
-    if _JS_RETURN_RE.match(line):
-        return _js_return_desc(line)
-
-    # common browser/node patterns
-    if "console.log" in s:
-        return "// Debug: print a message to the console."
-    if "alert(" in s:
-        return "// UI: show a popup message in the browser."
-    if "fetch(" in s:
-        return "// Fetch: send an HTTP request to an API."
-    if "await " in s:
-        return "// Await: wait for an async operation to finish."
-
-    if any(x in s for x in ["document.querySelector", "document.getElementById", "querySelectorAll"]):
-        return "// DOM: select an element from the page."
-    if ".addEventListener" in s:
-        return "// Event: run code when a user interaction happens (click, input, etc.)."
+    if "await " in st:
+        return "// Wait for an async operation to finish before continuing."
+    if "fetch(" in st:
+        return "// Send an HTTP request to an API."
+    if _JS_EVENT_RE.search(st):
+        return "// Run this code when the user triggers an event (e.g., submit, click)."
+    if "map(" in st:
+        return "// Transform each item into a new value (map)."
+    if "filter(" in st:
+        return "// Keep only items that match a condition (filter)."
+    if "reduce(" in st:
+        return "// Combine many items into one result (reduce)."
+    if "sort(" in st:
+        return "// Sort the list into a new order."
+    if "console.log" in st:
+        return "// Print a message to the console (for debugging)."
+    if "alert(" in st:
+        return "// Show a popup message in the browser."
+    if "prompt(" in st:
+        return "// Ask the user for input in a popup prompt."
 
     return None
 
 
 def _comment_js(code: str, file_path: str) -> str:
-    """
-    Produces line-aware comments:
-    - comment is placed directly above the line it describes
-    - avoids big ugly block comment spam
-    """
     code = _clean_existing_auto_headers(code)
     lines = code.splitlines()
     out: List[str] = []
 
-    out.append("// =======================================")
-    out.append("// Professional beginner-friendly comments")
-    out.append("// =======================================")
     out.append(f"// File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
     out.append("")
 
     for line in lines:
-        comment = _js_line_comment(line)
-        if comment:
-            out.append(f"{_indent_of(line)}{comment}")
+        s = line.strip()
+        if _js_should_comment(s):
+            c = _js_comment_for_line(s)
+            if c:
+                indent = re.match(r"^\s*", line).group(0)
+                out.append(f"{indent}{c}")
         out.append(line)
 
     return "\n".join(out).rstrip() + "\n"
@@ -590,93 +502,68 @@ def _comment_js(code: str, file_path: str) -> str:
 def _js_docs(file_path: str) -> str:
     return _doc_sectioned_no_code(
         title=_filename_title(file_path, "javascript"),
-        what_it_does=[
-            "Adds logic/behavior to a webpage (or runs as a Node.js script).",
-            "Functions organize reusable logic; async code can call APIs using fetch().",
-        ],
-        requirements=["Browser (web) OR Node.js (backend scripts)."],
+        what_it_does=["Adds logic to a web page (or runs as a Node.js script)."],
+        requirements=["Browser (web) or Node.js (backend)."],
         how_to_run=[
-            "Website:",
-            "1. Link the JS file in HTML: `<script src='file.js'></script>`.",
-            "2. Open the HTML file in a browser and check DevTools Console.",
+            "Web:",
+            "1. Link the file in HTML: `<script src='file.js'></script>`",
+            "2. Open the HTML in a browser and check DevTools Console.",
             "",
-            "Node.js:",
+            "Node:",
             "1. Run: `node file.js`",
         ],
         logic=[
-            "Variables store values for later use.",
-            "Functions group steps into reusable blocks.",
-            "If async/await is used, the code waits for promises to resolve before continuing.",
+            "Variables store values.",
+            "Functions group reusable steps.",
+            "Events run code when the user interacts (click/submit).",
+            "Async code can call APIs using fetch + await.",
         ],
         examples=[
-            "Input: user clicks a button / enters text / calls a function.",
-            "Output: console messages, popups, DOM updates, or return values.",
+            "Input: user clicks, submits form, or types data.",
+            "Output: DOM updates, console logs, alerts, returned values.",
         ],
         edge_cases=[
-            "If the script is not linked correctly in HTML, it will not run.",
-            "API calls can fail if the URL is wrong or the server is down.",
+            "If the script file path is wrong in HTML, it will not run.",
+            "API requests can fail if the server is down or URL is wrong.",
         ],
     )
 
 
 # ============================================================
-# HTML (universal, line-aware but not spammy)
+# HTML: comment confusing tags/attributes
 # ============================================================
+
+_HTML_TAG_HINTS = {
+    "form": "Collects user input and sends it when submitted.",
+    "input": "Input field where the user types a value.",
+    "button": "Clickable button to trigger an action.",
+    "script": "Loads or runs JavaScript code.",
+    "link": "Links external resources like CSS files.",
+    "meta": "Page configuration (charset, viewport, etc.).",
+    "table": "Displays data in rows and columns.",
+    "thead": "Table header section.",
+    "tbody": "Table body section.",
+    "label": "Text label for an input field.",
+}
+
 
 def _comment_html(code: str, file_path: str) -> str:
     code = _clean_existing_auto_headers(code)
     lines = code.splitlines()
     out: List[str] = []
-
-    out.append("<!-- ======================================= -->")
-    out.append("<!-- Professional beginner-friendly comments -->")
-    out.append("<!-- ======================================= -->")
     out.append(f"<!-- File: {os.path.basename(file_path) if file_path else 'pasted_code'} -->")
     out.append("")
 
-    seen = set()
-
-    def add_once(key: str, text: str):
-        if key not in seen:
-            out.append(text)
-            seen.add(key)
-
+    tag_re = re.compile(r"^\s*<\s*([a-zA-Z0-9]+)\b")
     for line in lines:
-        s = line.strip().lower()
-
-        if s.startswith("<!doctype"):
-            add_once("doctype", "<!-- DOCTYPE: tells the browser this is HTML5 -->")
-
-        if s.startswith("<html"):
-            add_once("html", "<!-- <html>: root element wrapping the whole page -->")
-
-        if s.startswith("<head"):
-            add_once("head", "<!-- <head>: metadata, title, and links to CSS/JS -->")
-
-        if s.startswith("<title"):
-            add_once("title", "<!-- <title>: text shown on the browser tab -->")
-
-        if "<meta" in s:
-            add_once("meta", "<!-- <meta>: page configuration (charset, viewport, etc.) -->")
-
-        if "<link" in s and "stylesheet" in s:
-            add_once("css", "<!-- <link rel='stylesheet'>: loads a CSS file for styling -->")
-
-        if s.startswith("<body"):
-            add_once("body", "<!-- <body>: visible page content -->")
-
-        if "<form" in s:
-            add_once("form", "<!-- <form>: collects user input -->")
-
-        if "<input" in s:
-            add_once("input", "<!-- <input>: user data entry field -->")
-
-        if "<button" in s:
-            add_once("button", "<!-- <button>: clickable action element -->")
-
-        if "<script" in s:
-            add_once("script", "<!-- <script>: loads/runs JavaScript for behavior -->")
-
+        m = tag_re.match(line)
+        if m:
+            tag = m.group(1).lower()
+            hint = _HTML_TAG_HINTS.get(tag)
+            # comment only for tags beginners struggle with
+            if hint and "<!--" not in line:
+                indent = re.match(r"^\s*", line).group(0)
+                out.append(f"{indent}<!-- {hint} -->")
         out.append(line)
 
     return "\n".join(out).rstrip() + "\n"
@@ -685,107 +572,62 @@ def _comment_html(code: str, file_path: str) -> str:
 def _html_docs(file_path: str) -> str:
     return _doc_sectioned_no_code(
         title=_filename_title(file_path, "html"),
-        what_it_does=["Defines the page structure and content that the browser displays."],
-        requirements=["A web browser (Chrome/Edge/Firefox/Safari)."],
-        how_to_run=[
-            "1. Save the file with a `.html` extension.",
-            "2. Open it in a browser.",
-        ],
+        what_it_does=["Defines the structure and content of a web page."],
+        requirements=["A web browser."],
+        how_to_run=["1. Save as `.html`", "2. Open in a browser."],
         logic=[
-            "HTML is parsed top-to-bottom to build the page structure (DOM).",
-            "`<head>` contains setup; `<body>` contains visible content.",
+            "The browser reads HTML and builds the page structure (DOM).",
+            "CSS (if linked) controls appearance; JS (if linked) controls behavior.",
         ],
-        examples=[
-            "Input: user clicks links/buttons or types into form fields.",
-            "Output: the page updates or JavaScript runs (if included).",
-        ],
-        edge_cases=[
-            "Broken `<script src>` or `<link href>` paths can prevent JS/CSS from loading.",
-        ],
+        examples=["Input: user clicks/types.", "Output: page shows content or runs JS."],
+        edge_cases=["Broken `<link>` / `<script src>` paths stop CSS/JS from loading."],
     )
 
 
 # ============================================================
-# CSS (selector-aware + inline property hints)
+# CSS: comment confusing selectors/properties without breaking nesting
 # ============================================================
 
-def _explain_css_selector(selector: str) -> str:
-    sel = selector.strip()
-    if sel.startswith("."):
-        return f"Targets elements with class `{sel[1:]}`."
-    if sel.startswith("#"):
-        return f"Targets the element with id `{sel[1:]}`."
-    if sel.startswith("@media"):
-        return "Applies styles only under certain screen conditions (responsive design)."
-    return f"Targets elements matching `{sel}`."
-
-
 def _comment_css(code: str, file_path: str) -> str:
+    """
+    We do NOT restructure CSS (regex parsing breaks media queries).
+    We add safe comments when we see:
+    - :root variables
+    - @media blocks
+    - display:flex/grid
+    - important layout properties
+    """
     code = _clean_existing_auto_headers(code)
-    text = code.strip()
-
+    lines = code.splitlines()
     out: List[str] = []
-    out.append("/* ======================================= */")
-    out.append("/* Professional beginner-friendly comments */")
-    out.append("/* ======================================= */")
     out.append(f"/* File: {os.path.basename(file_path) if file_path else 'pasted_code'} */")
-    out.append("/* CSS controls layout, colors, spacing, and fonts. */")
     out.append("")
 
-    # comment per rule block
-    # NOTE: This is a best-effort parser; it handles typical CSS blocks well.
-    pattern = re.compile(r"([^{]+)\{([^}]*)\}", re.S)
-    pos = 0
+    for line in lines:
+        s = line.strip()
 
-    for m in pattern.finditer(text):
-        before = text[pos:m.start()].strip()
-        if before:
-            out.append(before)
-            out.append("")
+        if s.startswith(":root"):
+            out.append("/* :root holds global CSS variables (reusable colors/sizes). */")
 
-        selector = m.group(1).strip()
-        body = m.group(2).strip()
+        if s.startswith("@media"):
+            out.append("/* Responsive design: styles inside apply only on certain screen sizes. */")
 
-        out.append(f"/* {_explain_css_selector(selector)} */")
-        out.append(f"{selector} {{")
+        if "display: flex" in s:
+            out.append("/* Flex layout: helps align items in a row/column. */")
 
-        for raw_line in body.splitlines():
-            t = raw_line.strip()
-            if not t:
-                continue
+        if "display: grid" in s:
+            out.append("/* Grid layout: helps build columns/rows layouts. */")
 
-            # Small, universal inline hints for common properties
-            if t.startswith("display:"):
-                out.append(f"  {t} /* layout mode */")
-            elif t.startswith("flex"):
-                out.append(f"  {t} /* flexbox layout setting */")
-            elif t.startswith("grid"):
-                out.append(f"  {t} /* grid layout setting */")
-            elif t.startswith("gap:"):
-                out.append(f"  {t} /* spacing between items */")
-            elif t.startswith("background"):
-                out.append(f"  {t} /* background styling */")
-            elif t.startswith("color:"):
-                out.append(f"  {t} /* text color */")
-            elif t.startswith("font"):
-                out.append(f"  {t} /* font styling */")
-            elif t.startswith("padding"):
-                out.append(f"  {t} /* inner spacing */")
-            elif t.startswith("margin"):
-                out.append(f"  {t} /* outer spacing */")
-            elif t.startswith("width") or t.startswith("max-width") or t.startswith("min-width"):
-                out.append(f"  {t} /* sizing */")
-            else:
-                out.append(f"  {t}")
+        if s.startswith("padding:"):
+            out.append("/* Padding = space inside the element. */")
 
-        out.append("}")
-        out.append("")
-        pos = m.end()
+        if s.startswith("margin:"):
+            out.append("/* Margin = space outside the element. */")
 
-    tail = text[pos:].strip()
-    if tail:
-        out.append(tail)
-        out.append("")
+        if s.startswith("gap:"):
+            out.append("/* Gap = space between items in flex/grid layout. */")
+
+        out.append(line)
 
     return "\n".join(out).rstrip() + "\n"
 
@@ -793,109 +635,73 @@ def _comment_css(code: str, file_path: str) -> str:
 def _css_docs(file_path: str) -> str:
     return _doc_sectioned_no_code(
         title=_filename_title(file_path, "css"),
-        what_it_does=["Styles a webpage by changing layout, colors, spacing, and fonts."],
-        requirements=["A browser + an HTML file that links this CSS using `<link rel='stylesheet'>`."],
+        what_it_does=["Controls how a web page looks (layout, spacing, fonts, colors)."],
+        requirements=["A browser + an HTML file that links this CSS."],
         how_to_run=[
-            "1. Link the CSS file inside the HTML `<head>`.",
-            "2. Open the HTML in a browser and refresh after changes.",
+            "1. Link it in HTML: `<link rel='stylesheet' href='styles.css'>`",
+            "2. Refresh the browser after edits.",
         ],
         logic=[
-            "Selectors choose which elements to style (`body`, `.class`, `#id`).",
-            "Properties control how those elements look.",
-            "Media queries (`@media`) apply styles conditionally for responsive design.",
+            "Selectors choose which elements to style.",
+            "Properties define how those elements should look.",
+            "@media blocks apply different styles for different screen sizes.",
         ],
-        examples=[
-            "Input: none directly.",
-            "Output: the webpage appearance changes.",
-        ],
-        edge_cases=[
-            "If the CSS file path is wrong, the browser won’t load styles.",
-            "Some properties override others depending on selector specificity.",
-        ],
+        examples=["Input: none directly.", "Output: page appearance changes."],
+        edge_cases=["If the CSS file path is wrong, styles will not load."],
     )
 
 
 # ============================================================
-# JAVA (more structured + line-aware)
+# Java: comment confusing constructs
 # ============================================================
-
-_JAVA_CLASS_RE = re.compile(r"^\s*public\s+class\s+([A-Za-z_]\w*)")
-_JAVA_MAIN_RE = re.compile(r"^\s*public\s+static\s+void\s+main\s*\(")
-_JAVA_METHOD_RE = re.compile(
-    r"^\s*(public|private|protected)\s+(static\s+)?([A-Za-z_]\w*(?:<.*?>)?)\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*\{?"
-)
-_JAVA_RETURN_RE = re.compile(r"^\s*return\b")
-_JAVA_FOR_RE = re.compile(r"^\s*for\s*\(")
-_JAVA_WHILE_RE = re.compile(r"^\s*while\s*\(")
-_JAVA_TRY_RE = re.compile(r"^\s*try\s*\{?")
-_JAVA_CATCH_RE = re.compile(r"^\s*catch\s*\(")
-
-
-def _java_method_comment(ret_type: str, name: str, args: str) -> str:
-    # Explain method signature without guessing its deeper intent.
-    a = args.strip() if args.strip() else "(none)"
-    if ret_type == "void":
-        return f"// Method: {name}({a}) — performs an action (no return value)."
-    return f"// Method: {name}({a}) — returns a `{ret_type}` result."
-
 
 def _comment_java(code: str, file_path: str) -> str:
     code = _clean_existing_auto_headers(code)
     lines = code.splitlines()
     out: List[str] = []
-
-    out.append("// =======================================")
-    out.append("// Professional beginner-friendly comments")
-    out.append("// =======================================")
     out.append(f"// File: {os.path.basename(file_path) if file_path else 'pasted_code'}")
     out.append("")
 
     for line in lines:
         s = line.strip()
-        indent = _indent_of(line)
 
-        m_cls = _JAVA_CLASS_RE.match(line)
-        if m_cls:
-            out.append(f"{indent}// Class: `{m_cls.group(1)}` groups methods and data.")
+        if re.match(r"^import\s+", s):
+            out.append("// Import a Java library so we can use its classes.")
             out.append(line)
             continue
 
-        if _JAVA_MAIN_RE.match(line):
-            out.append(f"{indent}// main(): program entry point (execution starts here).")
+        if re.match(r"^public\s+class\s+\w+", s):
+            out.append("// Define a class (container for methods and data).")
             out.append(line)
             continue
 
-        m_m = _JAVA_METHOD_RE.match(line)
-        if m_m and " main" not in line:
-            ret_type = m_m.group(3)
-            name = m_m.group(4)
-            args = m_m.group(5)
-            out.append(f"{indent}{_java_method_comment(ret_type, name, args)}")
+        if "public static void main" in s:
+            out.append("// Program starts running from main().")
             out.append(line)
             continue
 
-        if _JAVA_FOR_RE.match(line):
-            out.append(f"{indent}// Loop: repeat the next block for each iteration.")
+        if re.match(r"^\s*(public|private|protected)\s+static\s+\w+\s+\w+\s*\(", s) and "main" not in s:
+            out.append("// Define a method (reusable block). It can take inputs and return a result.")
             out.append(line)
             continue
 
-        if _JAVA_WHILE_RE.match(line):
-            out.append(f"{indent}// Loop: keep repeating while the condition stays true.")
+        if s.startswith("for") and "(" in s:
+            out.append("// Loop: repeat the next block multiple times.")
             out.append(line)
             continue
 
-        if _JAVA_TRY_RE.match(line):
-            out.append(f"{indent}// Try: run code that might throw an exception.")
+        if s.startswith("try"):
+            out.append("// Try running code that might throw an exception.")
             out.append(line)
             continue
 
-        if _JAVA_CATCH_RE.match(line):
-            out.append(f"{indent}// Catch: handle exceptions from the try block.")
+        if s.startswith("catch"):
+            out.append("// Handle the error so the program does not crash.")
             out.append(line)
             continue
 
-        if _JAVA_RETURN_RE.match(line):
-            out.append(f"{indent}// Return: send a result back to the caller.")
+        if s.startswith("return "):
+            out.append("// Return a value back to the caller.")
             out.append(line)
             continue
 
@@ -907,60 +713,62 @@ def _comment_java(code: str, file_path: str) -> str:
 def _java_docs(file_path: str) -> str:
     return _doc_sectioned_no_code(
         title=_filename_title(file_path, "java"),
-        what_it_does=["Defines Java classes and methods; may run via `main()` if present."],
-        requirements=["Java JDK installed (Java 17+ recommended)."],
+        what_it_does=["Defines Java classes/methods and may run from `main()`."],
+        requirements=["Java JDK installed."],
         how_to_run=[
-            "1. Open a terminal in the folder containing the `.java` file.",
+            "1. Open terminal in the folder.",
             "2. Compile: `javac FileName.java`",
             "3. Run: `java FileName` (without .java)",
         ],
         logic=[
-            "A class groups methods (functions) and fields (data).",
-            "`main()` is where execution starts.",
-            "Methods can return results using `return` (unless return type is `void`).",
+            "Java code is organized into classes.",
+            "`main()` is the entry point.",
+            "Methods may return values using `return`.",
         ],
-        examples=[
-            "Input: running the program in the terminal.",
-            "Output: console messages printed using `System.out.println`.",
-        ],
-        edge_cases=[
-            "The public class name usually must match the filename for compilation.",
-            "If the code reads files, the file must exist and path must be correct.",
-        ],
+        examples=["Input: user input if coded, or method parameters.", "Output: printed console text or returned values."],
+        edge_cases=["Class name often must match the file name to compile."],
     )
 
 
 # ============================================================
-# Public API: generate_simple_docs (HTML/CSS/JS/Java)
+# Public API: generate_simple_docs
 # ============================================================
 
 def generate_simple_docs(language: str, code: str, file_path: str = "pasted_code") -> Dict[str, Any]:
     language = (language or "").lower().strip()
     code_clean = code.replace("\r\n", "\n")
 
+    if language == "python":
+        return generate_python_docs(code_clean, file_path=file_path)
+
+    if language == "javascript":
+        commented = _comment_js(code_clean, file_path)
+        documentation = _js_docs(file_path)
+        return {"commented_code": commented, "documentation": documentation}
+
     if language == "html":
         commented = _comment_html(code_clean, file_path)
         documentation = _html_docs(file_path)
-    elif language == "css":
+        return {"commented_code": commented, "documentation": documentation}
+
+    if language == "css":
         commented = _comment_css(code_clean, file_path)
         documentation = _css_docs(file_path)
-    elif language == "javascript":
-        commented = _comment_js(code_clean, file_path)
-        documentation = _js_docs(file_path)
-    elif language == "java":
+        return {"commented_code": commented, "documentation": documentation}
+
+    if language == "java":
         commented = _comment_java(code_clean, file_path)
         documentation = _java_docs(file_path)
-    else:
-        commented = code_clean.strip() + "\n"
-        documentation = _doc_sectioned_no_code(
-            title=_filename_title(file_path, language or "unknown"),
-            what_it_does=["Part of a software project."],
-            requirements=["Depends on the project setup."],
-            how_to_run=["Run steps depend on the project."],
-            logic=["Logic depends on the file contents."],
-            examples=["Input/output depends on the program."],
-            edge_cases=["No extra notes."],
-        )
+        return {"commented_code": commented, "documentation": documentation}
 
-    return {"commented_code": commented.rstrip() + "\n", "documentation": documentation
-}
+    # fallback
+    documentation = _doc_sectioned_no_code(
+        title=_filename_title(file_path, language or "unknown"),
+        what_it_does=["Part of a software project."],
+        requirements=["Depends on the project."],
+        how_to_run=["Depends on the project."],
+        logic=["Depends on the code."],
+        examples=["Depends on the code."],
+        edge_cases=["No extra notes."],
+    )
+    return {"commented_code": code_clean.rstrip() + "\n", "documentation": documentation}
